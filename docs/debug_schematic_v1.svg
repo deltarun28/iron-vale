@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1076" height="616">
+<rect width="1076" height="616" fill="#b8d4e8"/>
+<text x="538.00" y="26" text-anchor="middle" font-family="monospace" font-size="15" font-weight="bold" fill="#222">River Crown — 19-Tile Debug Schematic v1</text>
+<polygon points="200.10,101.00 267.65,140.00 267.65,218.00 200.10,257.00 132.55,218.00 132.55,140.00" fill="#c2d8f0" stroke="#444" stroke-width="2"/>
+<polygon points="335.20,101.00 402.75,140.00 402.75,218.00 335.20,257.00 267.65,218.00 267.65,140.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="470.30,101.00 537.85,140.00 537.85,218.00 470.30,257.00 402.75,218.00 402.75,140.00" fill="#c8c4bc" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="605.40,101.00 672.95,140.00 672.95,218.00 605.40,257.00 537.85,218.00 537.85,140.00" fill="#c8c4bc" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="740.50,101.00 808.05,140.00 808.05,218.00 740.50,257.00 672.95,218.00 672.95,140.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="875.60,101.00 943.15,140.00 943.15,218.00 875.60,257.00 808.05,218.00 808.05,140.00" fill="#f0c2c2" stroke="#444" stroke-width="2"/>
+<polygon points="132.55,218.00 200.10,257.00 200.10,335.00 132.55,374.00 65.00,335.00 65.00,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="267.65,218.00 335.20,257.00 335.20,335.00 267.65,374.00 200.10,335.00 200.10,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="402.75,218.00 470.30,257.00 470.30,335.00 402.75,374.00 335.20,335.00 335.20,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="537.85,218.00 605.40,257.00 605.40,335.00 537.85,374.00 470.30,335.00 470.30,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="672.95,218.00 740.50,257.00 740.50,335.00 672.95,374.00 605.40,335.00 605.40,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="808.05,218.00 875.60,257.00 875.60,335.00 808.05,374.00 740.50,335.00 740.50,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="943.15,218.00 1010.70,257.00 1010.70,335.00 943.15,374.00 875.60,335.00 875.60,257.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="200.10,335.00 267.65,374.00 267.65,452.00 200.10,491.00 132.55,452.00 132.55,374.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="335.20,335.00 402.75,374.00 402.75,452.00 335.20,491.00 267.65,452.00 267.65,374.00" fill="#a8d890" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="470.30,335.00 537.85,374.00 537.85,452.00 470.30,491.00 402.75,452.00 402.75,374.00" fill="#a8d890" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="605.40,335.00 672.95,374.00 672.95,452.00 605.40,491.00 537.85,452.00 537.85,374.00" fill="#a8d890" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="740.50,335.00 808.05,374.00 808.05,452.00 740.50,491.00 672.95,452.00 672.95,374.00" fill="#a8d890" stroke="#7a7a7a" stroke-width="1.2"/>
+<polygon points="875.60,335.00 943.15,374.00 943.15,452.00 875.60,491.00 808.05,452.00 808.05,374.00" fill="#f0e4c2" stroke="#7a7a7a" stroke-width="1.2"/>
+<polyline points="132.55,296.00 267.65,296.00 402.75,296.00 537.85,296.00 672.95,296.00 808.05,296.00 943.15,296.00" fill="none" stroke="#c8a060" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+<polyline points="200.10,179.00 132.55,296.00 200.10,413.00" fill="none" stroke="#c8a060" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+<polyline points="875.60,179.00 943.15,296.00 875.60,413.00" fill="none" stroke="#c8a060" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+<line x1="200.10" y1="413.00" x2="875.60" y2="413.00" stroke="#3a7abf" stroke-width="2.5" stroke-dasharray="9,7" opacity="0.85"/>
+<text x="537.85" y="429.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#3a7abf" opacity="0.9">sea lane</text>
+<line x1="470.30" y1="257.00" x2="402.75" y2="218.00" stroke="#3a7abf" stroke-width="5" stroke-linecap="round"/>
+<line x1="537.85" y1="218.00" x2="470.30" y2="257.00" stroke="#3a7abf" stroke-width="5" stroke-linecap="round"/>
+<line x1="672.95" y1="218.00" x2="605.40" y2="257.00" stroke="#3a7abf" stroke-width="5" stroke-linecap="round"/>
+<line x1="605.40" y1="257.00" x2="537.85" y2="218.00" stroke="#3a7abf" stroke-width="5" stroke-linecap="round"/>
+<line x1="537.85" y1="374.00" x2="537.85" y2="452.00" stroke="#3a7abf" stroke-width="5" stroke-linecap="round"/>
+<text x="200.10" y="169.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">w_capital</text>
+<text x="200.10" y="184.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-3,-1)</text>
+<text x="200.10" y="197.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="174.10" y="171.00" font-size="16" fill="#1a5fa8">★</text>
+<text x="335.20" y="169.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">wt_plains</text>
+<text x="335.20" y="184.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-2,-1)</text>
+<text x="335.20" y="197.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="470.30" y="169.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">np_west</text>
+<text x="470.30" y="184.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-1,-1)</text>
+<text x="470.30" y="197.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">mountain</text>
+<text x="605.40" y="169.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">np_east</text>
+<text x="605.40" y="184.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(0,-1)</text>
+<text x="605.40" y="197.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">mountain</text>
+<text x="740.50" y="169.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">et_plains</text>
+<text x="740.50" y="184.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(1,-1)</text>
+<text x="740.50" y="197.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="875.60" y="169.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">e_capital</text>
+<text x="875.60" y="184.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(2,-1)</text>
+<text x="875.60" y="197.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="849.60" y="171.00" font-size="16" fill="#a81a1a">★</text>
+<text x="132.55" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">wc_plains</text>
+<text x="132.55" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-4,0)</text>
+<text x="132.55" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="267.65" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">w_inner</text>
+<text x="267.65" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-3,0)</text>
+<text x="267.65" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="402.75" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">w_plains</text>
+<text x="402.75" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-2,0)</text>
+<text x="402.75" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="537.85" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">cr_bridge</text>
+<text x="537.85" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-1,0)</text>
+<text x="537.85" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<rect x="529.85" y="320.00" width="16" height="8" rx="2" fill="#888" stroke="#555" stroke-width="1"/>
+<text x="672.95" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">e_plains</text>
+<text x="672.95" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(0,0)</text>
+<text x="672.95" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="808.05" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">e_inner</text>
+<text x="808.05" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(1,0)</text>
+<text x="808.05" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="943.15" y="286.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">ec_plains</text>
+<text x="943.15" y="301.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(2,0)</text>
+<text x="943.15" y="314.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<text x="200.10" y="403.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">wc_town</text>
+<text x="200.10" y="418.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-4,1)</text>
+<text x="200.10" y="431.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<circle cx="226.10" cy="399.00" r="6" fill="none" stroke="#555" stroke-width="1.8"/>
+<text x="335.20" y="403.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">wc_forest</text>
+<text x="335.20" y="418.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-3,1)</text>
+<text x="335.20" y="431.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">forest</text>
+<text x="470.30" y="403.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">sf_west</text>
+<text x="470.30" y="418.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-2,1)</text>
+<text x="470.30" y="431.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">forest</text>
+<text x="605.40" y="403.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">sf_east</text>
+<text x="605.40" y="418.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(-1,1)</text>
+<text x="605.40" y="431.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">forest</text>
+<text x="740.50" y="403.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">ec_forest</text>
+<text x="740.50" y="418.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(0,1)</text>
+<text x="740.50" y="431.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">forest</text>
+<text x="875.60" y="403.00" text-anchor="middle" font-family="monospace" font-size="10" font-weight="bold" fill="#222">ec_town</text>
+<text x="875.60" y="418.00" text-anchor="middle" font-family="monospace" font-size="9" fill="#555">(1,1)</text>
+<text x="875.60" y="431.00" text-anchor="middle" font-family="monospace" font-size="8" fill="#777">plains</text>
+<circle cx="901.60" cy="399.00" r="6" fill="none" stroke="#555" stroke-width="1.8"/>
+<circle cx="537.85" cy="296.00" r="6" fill="#e03030" stroke="white" stroke-width="2"/>
+<text x="547.85" y="288.00" font-family="monospace" font-size="9" fill="#e03030">anchor</text>
+<rect x="16" y="560" width="1044" height="52" rx="4" fill="white" fill-opacity="0.75" stroke="#aaa" stroke-width="1"/>
+<rect x="26" y="568" width="14" height="12" fill="#c2d8f0" stroke="#888" stroke-width="1"/>
+<text x="44" y="578" font-family="monospace" font-size="10" fill="#333">player 1</text>
+<rect x="110" y="568" width="14" height="12" fill="#f0c2c2" stroke="#888" stroke-width="1"/>
+<text x="128" y="578" font-family="monospace" font-size="10" fill="#333">player 2</text>
+<rect x="194" y="568" width="14" height="12" fill="#f0e4c2" stroke="#888" stroke-width="1"/>
+<text x="212" y="578" font-family="monospace" font-size="10" fill="#333">plains</text>
+<rect x="265" y="568" width="14" height="12" fill="#a8d890" stroke="#888" stroke-width="1"/>
+<text x="283" y="578" font-family="monospace" font-size="10" fill="#333">forest</text>
+<rect x="336" y="568" width="14" height="12" fill="#c8c4bc" stroke="#888" stroke-width="1"/>
+<text x="354" y="578" font-family="monospace" font-size="10" fill="#333">mountain</text>
+<line x1="26" y1="596" x2="46" y2="596" stroke="#3a7abf" stroke-width="5" stroke-linecap="round"/>
+<text x="50" y="600" font-family="monospace" font-size="10" fill="#333">river block</text>
+<line x1="141" y1="596" x2="161" y2="596" stroke="#c8a060" stroke-width="3.5" stroke-linecap="round"/>
+<text x="165" y="600" font-family="monospace" font-size="10" fill="#333">road (visual only)</text>
+<line x1="311" y1="596" x2="331" y2="596" stroke="#3a7abf" stroke-width="2.5" stroke-dasharray="7,5"/>
+<text x="335" y="600" font-family="monospace" font-size="10" fill="#333">sea lane</text>
+</svg>

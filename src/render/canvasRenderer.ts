@@ -1,0 +1,1036 @@
+/**
+ * canvasRenderer.ts — Draws the entire game scene onto a 2D canvas each frame.
+ *
+ * renderGame() is the public entry point. It draws in strict back-to-front order
+ * so later layers always appear on top of earlier ones:
+ *
+ *   1. Sea-blue background fill
+ *   2. Map PNG (scaled to match the hex grid)
+ *   3. Sea lane dashed curves
+ *   4. Hex tiles (selection ring, capacity bar, icons, troop marker, label)
+ *   5. Active action markers (moving dots + arrowheads)
+ *   6. Capture flash rings
+ *   7. Floating notifications (rising text)
+ *   8. Drag line (from selected tile to cursor)
+ *
+ * All drawing helpers receive a CanvasRenderingContext2D and operate in buffer
+ * pixel coordinates (devicePixelRatio × CSS pixels). ctx.save()/restore() is
+ * used around every helper so style changes don't leak between draw calls.
+ */
+
+import { asset } from "../assets";
+import { calculateSeaCost, findSeaLaneBetween } from "../game/movement";
+import { PRODUCTION_CAPS } from "../game/constants";
+import type { GameState, MapTheme, OwnerId, TerrainType } from "../game/types";
+import {
+  axialToPixel,
+  drawHexPath,
+  getHexPolygon,
+  getTileIdAtPoint,
+  type HexLayout,
+  type Point,
+} from "./geometry";
+
+// All three map art PNGs loaded once at module initialisation.
+const MAP_IMAGES: Record<MapTheme, HTMLImageElement> = {
+  default: Object.assign(new Image(), { src: asset("map.png") }),
+  winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
+  autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
+};
+
+// Calibration: position of the axial-origin hex (q=0, r=0 = east_plains)
+// inside the 1643×957 source PNG, and the PNG's hex radius (centre-to-corner).
+// PNG_SCALE_X lets the image be stretched horizontally independently of vertical
+// scaling to compensate for any aspect-ratio difference in the source art.
+// Adjust these constants if the art is redrawn at a different scale.
+const PNG_HEX_SIZE = 149;   // vertical hex radius in the PNG (centre-to-corner)
+const PNG_ORIGIN_X = 1038;  // x pixel of q=0,r=0 hex centre in the PNG
+const PNG_ORIGIN_Y = 448;   // y pixel of q=0,r=0 hex centre in the PNG
+const PNG_SCALE_X  = 1.17;  // horizontal stretch — PNG hexes are ~85% of expected width
+
+// The options passed in from GameScreen telling the renderer what the player
+// has selected, which tiles are valid drag targets, and where the drag currently is.
+export interface FloatingNotification {
+  id: number;
+  text: string;
+  tileId: string;
+  createdAt: number; // game time
+}
+
+export interface RenderOptions {
+  selectedTileId: string | null;
+  validTargetIds: string[];
+  dragPoint?: Point | null;
+  // Full ordered list of player-owned tiles visited during the current drag.
+  // When length >= 2, the drag line threads through each tile's centre rather
+  // than drawing a straight line from source to cursor.
+  dragPath?: string[];
+  sendFraction?: number;
+  mapTheme?: MapTheme;
+  // Maps tileId → game-time of capture; drives the brief flash ring on ownership changes.
+  captureFlashes?: Map<string, number>;
+  notifications?: FloatingNotification[];
+}
+
+// Player palette — vivid, saturated tones that punch through the parchment map.
+// Stroke and fill use the same hue per player.
+function getOwnerStroke(owner: OwnerId): string {
+  switch (owner) {
+    case "player1":
+      return "#2E7EC8";
+    case "player2":
+      return "#C42C2C";
+    case "player3":
+      return "#2C8C3C";
+    case "player4":
+      return "#C4A00C";
+    case "neutral":
+      return "#C8C2B0";
+    default:
+      return "#333333";
+  }
+}
+
+function getOwnerFill(owner: OwnerId): string {
+  switch (owner) {
+    case "player1":
+      return "#2E7EC8";
+    case "player2":
+      return "#C42C2C";
+    case "player3":
+      return "#2C8C3C";
+    case "player4":
+      return "#C4A00C";
+    case "neutral":
+      return "#ECE8DC";
+    default:
+      return "#cccccc";
+  }
+}
+
+function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height: number): void {
+  ctx.fillStyle = "#2a6a9b";
+  ctx.fillRect(0, 0, width, height);
+}
+
+// Draws the map PNG scaled and positioned so its internal hex grid aligns with
+// the canvas hex grid. Falls back to nothing if the image hasn't loaded yet
+// (the solid sea-blue from clearCanvas shows instead).
+function drawMapBackground(ctx: CanvasRenderingContext2D, layout: HexLayout, theme: MapTheme): void {
+  const img = MAP_IMAGES[theme];
+  if (!img.complete || img.naturalWidth === 0) return;
+  const scaleY = layout.size / PNG_HEX_SIZE;
+  const scaleX = scaleY * PNG_SCALE_X;
+  ctx.drawImage(
+    img,
+    layout.origin.x - PNG_ORIGIN_X * scaleX,
+    layout.origin.y - PNG_ORIGIN_Y * scaleY,
+    img.naturalWidth * scaleX,
+    img.naturalHeight * scaleY,
+  );
+}
+
+// Draws one hex tile: terrain fill, ownership outline, icons, troop count, busy ring, label.
+// ctx.save() and ctx.restore() (used inside helpers) preserve canvas state so
+// each drawing operation doesn't accidentally affect the ones that follow.
+function drawHexTile(params: {
+  ctx: CanvasRenderingContext2D;
+  state: GameState;
+  tileId: string;
+  layout: HexLayout;
+  selected: boolean;
+  validTarget: boolean;
+  underAttack: boolean;
+}): void {
+  const { ctx, state, tileId, layout, selected, validTarget, underAttack } = params;
+  const definition = state.tileDefinitions[tileId];
+  const tile = state.tiles[tileId];
+
+  if (!definition || !tile) {
+    return;
+  }
+
+  const polygon = getHexPolygon(definition.coord, layout);
+
+  // Only draw a hex border for interactive states — the PNG provides all
+  // territory art so there is no ownership tint or regular grid stroke.
+  if (selected || validTarget) {
+    drawHexPath(ctx, polygon.corners);
+    ctx.lineWidth = selected ? 6 : 5;
+    ctx.strokeStyle = selected ? "#ffffff" : "#ffe066";
+    ctx.stroke();
+  }
+
+  // Capacity bar: skip for neutral tiles (they have a fixed max, not a terrain cap).
+  if (tile.owner !== "neutral") {
+    const terrain = definition.isCapital ? "capital" : definition.terrain;
+    const cap = PRODUCTION_CAPS[terrain];
+    drawCapacityBar(ctx, polygon.center, layout.size, tile.troops, cap.stopsAt);
+  }
+
+  if (tile.fortLevel > 0) drawFortIcon(ctx, polygon.center, layout.size, tile.fortLevel);
+  if (tile.attackVetLevel > 0) drawAttackVetIcon(ctx, polygon.center, layout.size, tile.attackVetLevel);
+  if (tile.defVetLevel > 0)    drawDefVetIcon(ctx, polygon.center, layout.size, tile.defVetLevel);
+
+  if (definition.hasBridge) {
+    drawBridgeMarker(ctx, polygon.center, layout.size);
+  }
+
+  if (definition.isCapital) {
+    drawCapitalMarker(ctx, polygon.center, tile.owner);
+  } else if (definition.isTown) {
+    drawTownMarker(ctx, polygon.center, tile.owner);
+  }
+
+  drawTroopMarker(ctx, polygon.center, tile.owner, tile.troops, tile.armoured);
+
+  if (underAttack) {
+    drawAttackWarningRing(ctx, polygon.center, state.now);
+  }
+
+  if (tile.busyUntil !== null && tile.busyUntil > state.now) {
+    drawBusyRing(ctx, polygon.center, layout.size, tile.busyUntil - state.now);
+  }
+
+  drawTileLabel(ctx, polygon.center, definition.name, layout.size);
+}
+
+// Draws simple terrain detail shapes inside each hex.
+// ctx.save() before and ctx.restore() after means any style changes made
+// inside this function (fillStyle, lineWidth etc.) don't leak out.
+/**
+ * Draws simple decorative terrain shapes inside a hex (trees, peaks, grass lines).
+ * These are canvas-drawn overlays that supplement the PNG map art — only visible
+ * if the PNG isn't loaded or during development without the asset.
+ */
+function drawTerrainDetails(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  size: number,
+  terrain: TerrainType
+): void {
+  ctx.save();
+
+  if (terrain === "forest") {
+    ctx.fillStyle = "rgba(20, 70, 35, 0.85)";
+
+    for (let i = 0; i < 5; i += 1) {
+      const x = center.x + (i - 2) * size * 0.18;
+      const y = center.y - size * 0.18 + (i % 2) * size * 0.16;
+
+      ctx.beginPath();
+      ctx.moveTo(x, y - size * 0.18);
+      ctx.lineTo(x - size * 0.12, y + size * 0.12);
+      ctx.lineTo(x + size * 0.12, y + size * 0.12);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  if (terrain === "mountain") {
+    ctx.fillStyle = "rgba(80, 80, 85, 0.9)";
+
+    ctx.beginPath();
+    ctx.moveTo(center.x - size * 0.35, center.y + size * 0.18);
+    ctx.lineTo(center.x - size * 0.08, center.y - size * 0.32);
+    ctx.lineTo(center.x + size * 0.12, center.y + size * 0.18);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(center.x, center.y + size * 0.2);
+    ctx.lineTo(center.x + size * 0.25, center.y - size * 0.28);
+    ctx.lineTo(center.x + size * 0.42, center.y + size * 0.2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  if (terrain === "plains") {
+    ctx.strokeStyle = "rgba(120, 92, 35, 0.35)";
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(center.x - size * 0.35, center.y - size * 0.1);
+    ctx.quadraticCurveTo(center.x, center.y - size * 0.25, center.x + size * 0.35, center.y - size * 0.05);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(center.x - size * 0.3, center.y + size * 0.12);
+    ctx.quadraticCurveTo(center.x, center.y + size * 0.02, center.x + size * 0.28, center.y + size * 0.15);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// Shield with level number at the top-left of the hex interior.
+function drawFortIcon(ctx: CanvasRenderingContext2D, center: Point, size: number, level: number): void {
+  if (level <= 0) return;
+  ctx.save();
+
+  const s = Math.max(6, size * 0.13);
+  const cx = center.x - size * 0.43;
+  const cy = center.y - size * 0.44;
+
+  // Shield fill intensity scales with level: brighter at level 5
+  const alpha = 0.70 + 0.06 * level;
+  ctx.fillStyle = `rgba(200, 180, 80, ${alpha})`;
+  ctx.strokeStyle = "rgba(80, 55, 20, 0.85)";
+  ctx.lineWidth = 1;
+
+  ctx.beginPath();
+  ctx.moveTo(cx - s, cy - s * 0.8);
+  ctx.lineTo(cx + s, cy - s * 0.8);
+  ctx.lineTo(cx + s, cy + s * 0.2);
+  ctx.lineTo(cx, cy + s * 1.2);
+  ctx.lineTo(cx - s, cy + s * 0.2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(60, 40, 10, 0.9)";
+  ctx.font = `bold ${Math.max(8, s * 1.1)}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(level), cx, cy + s * 0.1);
+
+  ctx.restore();
+}
+
+
+// Chevron stripes at the bottom-left — one per attack veteran level (max 3).
+function drawAttackVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: number, level: number): void {
+  if (level <= 0) return;
+  ctx.save();
+
+  const w = size * 0.22;
+  const h = size * 0.08;
+  const cx = center.x - size * 0.36;
+  const baseY = center.y + size * 0.52;
+
+  ctx.fillStyle = "rgba(220, 140, 20, 0.95)";
+  ctx.strokeStyle = "rgba(100, 60, 0, 0.8)";
+  ctx.lineWidth = 0.8;
+
+  for (let i = 0; i < level; i++) {
+    const cy = baseY - i * (h + 2);
+    // V-shaped chevron
+    ctx.beginPath();
+    ctx.moveTo(cx - w / 2, cy - h / 2);
+    ctx.lineTo(cx, cy + h / 2);
+    ctx.lineTo(cx + w / 2, cy - h / 2);
+    ctx.lineTo(cx + w / 2 - h * 0.6, cy - h / 2);
+    ctx.lineTo(cx, cy + h / 2 - h * 0.6);
+    ctx.lineTo(cx - w / 2 + h * 0.6, cy - h / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// Horizontal stripes at the bottom-right — one per defence veteran level (max 3).
+function drawDefVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: number, level: number): void {
+  if (level <= 0) return;
+  ctx.save();
+
+  const w = size * 0.18;
+  const h = size * 0.06;
+  const cx = center.x + size * 0.36;
+  const baseY = center.y + size * 0.52;
+
+  ctx.fillStyle = "rgba(80, 160, 100, 0.95)";
+  ctx.strokeStyle = "rgba(20, 70, 40, 0.8)";
+  ctx.lineWidth = 0.8;
+
+  for (let i = 0; i < level; i++) {
+    const cy = baseY - i * (h + 2);
+    ctx.beginPath();
+    ctx.roundRect(cx - w / 2, cy - h / 2, w, h, 1);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/** Draws a bridge icon (road bar + river arc) at the hex centre. */
+function drawBridgeMarker(ctx: CanvasRenderingContext2D, center: Point, size: number): void {
+  ctx.save();
+
+  ctx.strokeStyle = "#6d4c2f";
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+
+  ctx.beginPath();
+  ctx.moveTo(center.x - size * 0.35, center.y);
+  ctx.lineTo(center.x + size * 0.35, center.y);
+  ctx.stroke();
+
+  ctx.strokeStyle = "#2f78a8";
+  ctx.lineWidth = 3;
+
+  ctx.beginPath();
+  ctx.moveTo(center.x - size * 0.35, center.y - size * 0.18);
+  ctx.quadraticCurveTo(center.x, center.y - size * 0.08, center.x + size * 0.35, center.y - size * 0.18);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+/** Draws a filled circle labelled "C" in the owner's colour above the troop marker. */
+function drawCapitalMarker(ctx: CanvasRenderingContext2D, center: Point, owner: OwnerId): void {
+  ctx.save();
+
+  ctx.fillStyle = getOwnerFill(owner);
+  ctx.strokeStyle = "#3a2c1a";
+  ctx.lineWidth = 2;
+
+  ctx.beginPath();
+  ctx.arc(center.x, center.y - 18, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 16px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("C", center.x, center.y - 18);
+
+  ctx.restore();
+}
+
+/** Draws a filled circle labelled "T" in the owner's colour above the troop marker. */
+function drawTownMarker(ctx: CanvasRenderingContext2D, center: Point, owner: OwnerId): void {
+  ctx.save();
+
+  ctx.fillStyle = getOwnerFill(owner);
+  ctx.strokeStyle = "#3a2c1a";
+  ctx.lineWidth = 2;
+
+  ctx.beginPath();
+  ctx.arc(center.x, center.y - 18, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 13px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("T", center.x, center.y - 18);
+
+  ctx.restore();
+}
+
+// Thin pulsing ring just outside the troop marker — signals an in-flight attack
+// is heading toward this tile. Kept deliberately faint so it reads as a heads-up
+// rather than an alarm.
+function drawAttackWarningRing(ctx: CanvasRenderingContext2D, center: Point, now: number): void {
+  ctx.save();
+  // Pulse between 0.15 and 0.45 opacity over a 1.5 s cycle.
+  const alpha = 0.15 + 0.30 * (0.5 + 0.5 * Math.sin((now / 1.5) * Math.PI * 2));
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = "#e08020";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y + 10, 24, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * Draws the main troop marker at the bottom-centre of the hex — the primary
+ * interactive target for starting a drag. Unarmed tiles use a circle; armoured
+ * tiles replace it with a heraldic shield of the same width so the upgrade is
+ * visible at a glance without a separate icon.
+ *
+ * The position and radius (y+10, r=18) must match TROOP_ICON_Y_OFFSET and
+ * TROOP_ICON_RADIUS in GameScreen.tsx so the hit-test and the visual align.
+ */
+function drawTroopMarker(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  owner: OwnerId,
+  troops: number,
+  armoured = false
+): void {
+  ctx.save();
+
+  const cx = center.x;
+  const cy = center.y + 10;
+  const r  = 18;
+
+  ctx.fillStyle = getOwnerFill(owner);
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
+  ctx.lineWidth = 2;
+
+  if (armoured) {
+    // Heater shield: flat top with rounded corners, sides curve wide then sweep
+    // smoothly to a centre point — the classic heraldic silhouette.
+    const cr = r * 0.35;
+    ctx.beginPath();
+    ctx.moveTo(cx - r, cy - r + cr);
+    ctx.arcTo(cx - r, cy - r, cx - r + cr, cy - r, cr);    // top-left corner
+    ctx.lineTo(cx + r - cr, cy - r);
+    ctx.arcTo(cx + r, cy - r, cx + r, cy - r + cr, cr);    // top-right corner
+    // right side stays wide, then sweeps inward to the point
+    ctx.bezierCurveTo(cx + r, cy + r * 0.38, cx + r * 0.45, cy + r * 0.98, cx, cy + r * 1.22);
+    // left side mirrors back up
+    ctx.bezierCurveTo(cx - r * 0.45, cy + r * 0.98, cx - r, cy + r * 0.38, cx - r, cy - r + cr);
+    ctx.closePath();
+  } else {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  }
+
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 16px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(String(Math.floor(troops)), cx, cy);
+
+  ctx.restore();
+}
+
+// Thin fill bar at the top interior of the hex showing troops vs production cap.
+// Turns amber when the tile is almost full (> 85 %) so players know to reinforce.
+function drawCapacityBar(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  size: number,
+  troops: number,
+  capStopsAt: number
+): void {
+  ctx.save();
+
+  const fill = Math.min(1, Math.max(0, troops / capStopsAt));
+  const barW = size * 0.65;
+  const barH = Math.max(3, size * 0.055);
+  const x = center.x - barW / 2;
+  const y = center.y - size * 0.54;
+
+  // Track
+  ctx.fillStyle = "rgba(0, 0, 0, 0.22)";
+  ctx.beginPath();
+  ctx.roundRect(x, y, barW, barH, barH / 2);
+  ctx.fill();
+
+  // Fill
+  if (fill > 0.02) {
+    ctx.fillStyle = fill >= 0.85 ? "#e8a020" : "rgba(255, 255, 255, 0.75)";
+    ctx.beginPath();
+    ctx.roundRect(x, y, barW * fill, barH, barH / 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// A white ring drawn around the troop marker to signal the tile is busy.
+// Shows remaining seconds so players know when the tile is free again.
+function drawBusyRing(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  size: number,
+  secondsLeft: number
+): void {
+  ctx.save();
+
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+  ctx.lineWidth = 4;
+
+  ctx.beginPath();
+  ctx.arc(center.x, center.y + 10, size * 0.38, 0, Math.PI * 2);
+  ctx.stroke();
+
+  if (secondsLeft > 0) {
+    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+    ctx.font = `bold ${Math.max(9, size * 0.18)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(
+      secondsLeft < 10 ? secondsLeft.toFixed(1) + "s" : Math.ceil(secondsLeft) + "s",
+      center.x + size * 0.44,
+      center.y + 10
+    );
+  }
+
+  ctx.restore();
+}
+
+function drawTileLabel(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  label: string,
+  size: number
+): void {
+  ctx.save();
+
+  ctx.fillStyle = "rgba(255, 248, 225, 0.9)";
+  ctx.strokeStyle = "rgba(80, 55, 30, 0.45)";
+  ctx.lineWidth = 1;
+
+  const width = Math.min(size * 1.35, Math.max(70, label.length * 5.5));
+  const height = 16;
+  const x = center.x - width / 2;
+  const y = center.y + size * 0.48;
+
+  ctx.beginPath();
+  ctx.roundRect(x, y, width, height, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#3c2d1f";
+  ctx.font = "10px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, center.x, y + height / 2);
+
+  ctx.restore();
+}
+
+// Returns the three control points of the quadratic Bézier used to draw a sea
+// route between two tile centres. The arc bows downward into the sea area.
+// Every function that draws sea movement (lanes, active actions, drag line)
+// calls this so they all trace exactly the same curve.
+function getSeaArcBezier(
+  from: Point,
+  to: Point,
+  size: number
+): { start: Point; control: Point; end: Point } {
+  return {
+    start:   { x: from.x,               y: from.y + size * 1.375 },
+    control: { x: (from.x + to.x) / 2,  y: Math.max(from.y, to.y) + size * 1.667 },
+    end:     { x: to.x,                  y: to.y + size * 1.375 },
+  };
+}
+
+// Evaluates a quadratic Bézier at parameter t ∈ [0, 1].
+function bezierPoint(
+  start: Point,
+  control: Point,
+  end: Point,
+  t: number
+): Point {
+  const mt = 1 - t;
+  return {
+    x: mt * mt * start.x + 2 * mt * t * control.x + t * t * end.x,
+    y: mt * mt * start.y + 2 * mt * t * control.y + t * t * end.y,
+  };
+}
+
+// Draws all sea lanes as dashed curved lines beneath the tile layer.
+function drawSeaLanes(ctx: CanvasRenderingContext2D, state: GameState, layout: HexLayout): void {
+  ctx.save();
+
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 8]);
+
+  for (const lane of state.seaLanes) {
+    const fromDefinition = state.tileDefinitions[lane.from];
+    const toDefinition = state.tileDefinitions[lane.to];
+
+    if (!fromDefinition || !toDefinition) {
+      continue;
+    }
+
+    const from = axialToPixel(fromDefinition.coord, layout);
+    const to = axialToPixel(toDefinition.coord, layout);
+    const arc = getSeaArcBezier(from, to, layout.size);
+
+    ctx.beginPath();
+    ctx.moveTo(arc.start.x, arc.start.y);
+    ctx.quadraticCurveTo(arc.control.x, arc.control.y, arc.end.x, arc.end.y);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// Draws each active action as a moving troop marker along its route.
+// Land actions travel in a straight line; sea actions follow the Bézier arc.
+function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layout: HexLayout): void {
+  ctx.save();
+
+  for (const action of state.activeActions) {
+    const sourceDefinition = state.tileDefinitions[action.sourceTileId];
+    const targetDefinition = state.tileDefinitions[action.targetTileId];
+
+    if (!sourceDefinition || !targetDefinition) {
+      continue;
+    }
+
+    const source = axialToPixel(sourceDefinition.coord, layout);
+    const target = axialToPixel(targetDefinition.coord, layout);
+
+    const duration = action.resolvesAt - action.startedAt;
+    const progress = duration > 0
+      ? Math.max(0, Math.min(1, (state.now - action.startedAt) / duration))
+      : 1;
+
+    const isAttack = action.type === "land_attack" || action.type === "sea_attack";
+
+    // Your arrows keep the orange/green semantic so attack vs reinforce reads
+    // at a glance. Other players' arrows are drawn in that player's own colour
+    // — useful in FFA / 2v2 to tell at a glance whose troops are moving.
+    let color: string;
+    if (action.owner === "player1") {
+      color = isAttack ? "#e06820" : "#2aaa66";
+    } else {
+      color = getOwnerStroke(action.owner);
+    }
+
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([10, 7]);
+
+    let dotPos: Point;
+    let targetEdge: Point; // point on the edge of the destination hex for the arrowhead
+
+    if (action.isSeaAction) {
+      const arc = getSeaArcBezier(source, target, layout.size);
+
+      ctx.globalAlpha = 0.22;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(arc.start.x, arc.start.y);
+      ctx.quadraticCurveTo(arc.control.x, arc.control.y, arc.end.x, arc.end.y);
+      ctx.stroke();
+
+      dotPos = bezierPoint(arc.start, arc.control, arc.end, progress);
+      // Arrowhead near the end of the arc
+      targetEdge = bezierPoint(arc.start, arc.control, arc.end, 0.92);
+    } else {
+      ctx.globalAlpha = 0.22;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(source.x, source.y);
+      ctx.lineTo(target.x, target.y);
+      ctx.stroke();
+
+      dotPos = {
+        x: source.x + (target.x - source.x) * progress,
+        y: source.y + (target.y - source.y) * progress,
+      };
+      // Arrowhead points toward destination
+      const edgeFraction = 0.78;
+      targetEdge = {
+        x: source.x + (target.x - source.x) * edgeFraction,
+        y: source.y + (target.y - source.y) * edgeFraction,
+      };
+    }
+
+    ctx.setLineDash([]);
+
+    // Arrowhead at the destination end (only draw on land attacks for clarity)
+    if (isAttack && !action.isSeaAction) {
+      const angle = Math.atan2(target.y - source.y, target.x - source.x);
+      const arrowSize = Math.max(8, layout.size * 0.16);
+      ctx.globalAlpha = 0.65;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(targetEdge.x + Math.cos(angle) * arrowSize, targetEdge.y + Math.sin(angle) * arrowSize);
+      ctx.lineTo(targetEdge.x + Math.cos(angle + 2.4) * arrowSize * 0.6, targetEdge.y + Math.sin(angle + 2.4) * arrowSize * 0.6);
+      ctx.lineTo(targetEdge.x + Math.cos(angle - 2.4) * arrowSize * 0.6, targetEdge.y + Math.sin(angle - 2.4) * arrowSize * 0.6);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Moving marker circle
+    ctx.globalAlpha = 0.93;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.4)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(dotPos.x, dotPos.y, 17, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Troop count inside the marker
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(Math.floor(action.troopsSent)), dotPos.x, dotPos.y);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// Draws the drag line from the source tile toward the player's finger/cursor.
+// For sea-lane targets the line snaps to the same Bézier arc used by the sea
+// lane visual; for land targets it stays a straight line to the cursor.
+function drawDragLine(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  options: RenderOptions
+): void {
+  if (!options.dragPoint || !options.selectedTileId) {
+    return;
+  }
+
+  const sourceDefinition = state.tileDefinitions[options.selectedTileId];
+  if (!sourceDefinition) {
+    return;
+  }
+
+  const sourceCenter = axialToPixel(sourceDefinition.coord, layout);
+  const cursorPoint = options.dragPoint;
+
+  const tileCoords = Object.fromEntries(
+    Object.values(state.tileDefinitions).map((def) => [def.id, def.coord])
+  );
+  const hoveredTileId = getTileIdAtPoint({ point: cursorPoint, layout, tileCoords });
+  const overValidTarget =
+    hoveredTileId !== null && options.validTargetIds.includes(hoveredTileId);
+
+  // Check whether the valid target is reachable by sea.
+  const seaLane =
+    overValidTarget && hoveredTileId
+      ? findSeaLaneBetween(state.seaLanes, options.selectedTileId, hoveredTileId)
+      : null;
+
+  const lineColor = overValidTarget
+    ? "rgba(45, 108, 223, 0.9)"
+    : "rgba(210, 210, 210, 0.65)";
+
+  const dotColor = overValidTarget
+    ? "rgba(45, 108, 223, 1.0)"
+    : "rgba(210, 210, 210, 0.8)";
+
+  ctx.save();
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 6]);
+  ctx.lineCap = "round";
+
+  if (seaLane && hoveredTileId) {
+    // Snap to the sea arc so the drag line traces the actual route.
+    const targetDefinition = state.tileDefinitions[hoveredTileId];
+    if (targetDefinition) {
+      const targetCenter = axialToPixel(targetDefinition.coord, layout);
+      const arc = getSeaArcBezier(sourceCenter, targetCenter, layout.size);
+
+      ctx.beginPath();
+      ctx.moveTo(arc.start.x, arc.start.y);
+      ctx.quadraticCurveTo(arc.control.x, arc.control.y, arc.end.x, arc.end.y);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = dotColor;
+      ctx.beginPath();
+      ctx.arc(arc.end.x, arc.end.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Gold cost badge — centred on the arc midpoint so it floats over the sea.
+      const sourceTile = state.tiles[options.selectedTileId];
+      const targetTile = state.tiles[hoveredTileId];
+      const sourceDef = sourceDefinition;
+      const targetDef = targetDefinition;
+
+      if (sourceTile && targetTile) {
+        const fraction = options.sendFraction ?? 0.5;
+        const troopsSent = Math.max(1, Math.floor(sourceTile.troops * fraction));
+        const seaCost = calculateSeaCost({
+          troopsSent,
+          sourceDefinition: sourceDef,
+          sourceState: sourceTile,
+          targetDefinition: targetDef,
+          targetState: targetTile,
+        });
+
+        const label = seaCost.cost === 0 ? "free" : `${seaCost.cost} gold`;
+        const mid = bezierPoint(arc.start, arc.control, arc.end, 0.5);
+
+        ctx.font = "bold 11px sans-serif";
+        const textW = ctx.measureText(label).width;
+        const pad = 9;
+        const bw = textW + pad * 2;
+        const bh = 20;
+
+        ctx.fillStyle = "rgba(255, 248, 225, 0.96)";
+        ctx.strokeStyle = "rgba(70, 50, 30, 0.5)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(mid.x - bw / 2, mid.y - bh / 2, bw, bh, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#3d2b1b";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, mid.x, mid.y);
+      }
+    }
+  } else {
+    // Land drag: line from source through any intermediate path tiles to cursor.
+    ctx.beginPath();
+    ctx.moveTo(sourceCenter.x, sourceCenter.y);
+
+    // If the player has dragged through intermediate tiles, route the line
+    // through each tile centre so the path is visually clear.
+    const path = options.dragPath;
+    if (path && path.length >= 2) {
+      for (let i = 1; i < path.length; i++) {
+        const def = state.tileDefinitions[path[i]!];
+        if (def) {
+          const c = axialToPixel(def.coord, layout);
+          ctx.lineTo(c.x, c.y);
+        }
+      }
+    }
+
+    ctx.lineTo(cursorPoint.x, cursorPoint.y);
+    ctx.stroke();
+
+    ctx.setLineDash([]);
+    ctx.fillStyle = dotColor;
+    ctx.beginPath();
+    ctx.arc(cursorPoint.x, cursorPoint.y, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// Draws fading capture rings over tiles that recently changed owner.
+// The ring fades out over 1.5 seconds using the new owner's color.
+const NOTIFICATION_DURATION = 2.0; // seconds before fully faded
+
+function drawNotifications(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  notifications: FloatingNotification[]
+): void {
+  ctx.save();
+
+  for (const n of notifications) {
+    const age = state.now - n.createdAt;
+    if (age >= NOTIFICATION_DURATION) continue;
+
+    const definition = state.tileDefinitions[n.tileId];
+    if (!definition) continue;
+
+    const center = axialToPixel(definition.coord, layout);
+    const progress = age / NOTIFICATION_DURATION;
+    const alpha = Math.max(0, 1 - progress * progress); // quadratic fade
+    const riseY = center.y - layout.size * 0.9 - progress * layout.size * 0.8;
+
+    ctx.globalAlpha = alpha;
+    ctx.font = `bold ${Math.max(12, layout.size * 0.22)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    // Drop shadow for readability over any background
+    ctx.strokeStyle = "rgba(0,0,0,0.6)";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.strokeText(n.text, center.x, riseY);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(n.text, center.x, riseY);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/**
+ * Draws a brief glowing ring over tiles that recently changed owner.
+ * The ring fades out over 1.5 seconds in the new owner's colour, giving
+ * visual feedback without blocking the view of the tile underneath.
+ */
+function drawCaptureFlashes(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  flashes: Map<string, number>
+): void {
+  ctx.save();
+
+  for (const [tileId, flashTime] of flashes) {
+    const age = state.now - flashTime;
+
+    if (age >= 1.5) {
+      continue;
+    }
+
+    const definition = state.tileDefinitions[tileId];
+    const tile = state.tiles[tileId];
+
+    if (!definition || !tile) {
+      continue;
+    }
+
+    const polygon = getHexPolygon(definition.coord, layout);
+    const alpha = (1 - age / 1.5) * 0.9;
+
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = getOwnerStroke(tile.owner);
+    ctx.lineWidth = layout.size * 0.18;
+    ctx.shadowColor = getOwnerStroke(tile.owner);
+    ctx.shadowBlur = layout.size * 0.3;
+
+    ctx.beginPath();
+    ctx.arc(polygon.center.x, polygon.center.y, layout.size * 0.65, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// The main render function called once per animation frame.
+// Draws the full scene in order: background → sea lanes → tiles → action lines → drag line.
+export function renderGame(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  options: RenderOptions
+): void {
+  const canvas = ctx.canvas;
+
+  clearCanvas(ctx, canvas.width, canvas.height);
+  drawMapBackground(ctx, layout, options.mapTheme ?? "default");
+  drawSeaLanes(ctx, state, layout);
+
+  // Tiles with an in-flight attack headed toward them show a subtle warning ring.
+  const underAttackIds = new Set(
+    state.activeActions
+      .filter((a) => a.type === "land_attack" || a.type === "sea_attack")
+      .map((a) => a.targetTileId)
+  );
+
+  for (const tileId of Object.keys(state.tileDefinitions)) {
+    drawHexTile({
+      ctx,
+      state,
+      tileId,
+      layout,
+      selected: options.selectedTileId === tileId,
+      validTarget: options.validTargetIds.includes(tileId),
+      underAttack: underAttackIds.has(tileId),
+    });
+  }
+
+  drawActiveActions(ctx, state, layout);
+
+  if (options.captureFlashes && options.captureFlashes.size > 0) {
+    drawCaptureFlashes(ctx, state, layout, options.captureFlashes);
+  }
+
+  if (options.notifications && options.notifications.length > 0) {
+    drawNotifications(ctx, state, layout, options.notifications);
+  }
+
+  drawDragLine(ctx, state, layout, options);
+}

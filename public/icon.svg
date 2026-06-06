@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#3d2b1b"/>
+  <!-- Crown base -->
+  <rect x="112" y="320" width="288" height="52" rx="10" fill="#c9a84c"/>
+  <!-- Crown band -->
+  <rect x="120" y="296" width="272" height="32" rx="6" fill="#e0c06a"/>
+  <!-- Crown peaks: left, centre, right -->
+  <polygon points="112,296 152,160 200,260 256,120 312,260 360,160 400,296" fill="#c9a84c"/>
+  <!-- Jewels -->
+  <circle cx="256" cy="148" r="18" fill="#e05555"/>
+  <circle cx="168" cy="238" r="12" fill="#5588dd"/>
+  <circle cx="344" cy="238" r="12" fill="#5588dd"/>
+  <!-- River wave below crown -->
+  <path d="M96 388 Q160 370 224 388 Q288 406 352 388 Q416 370 416 388" stroke="#2a6a9b" stroke-width="10" fill="none" stroke-linecap="round"/>
+</svg>
