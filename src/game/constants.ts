@@ -95,6 +95,10 @@ export const PRODUCTION_CAPS: Record<"plains" | "forest" | "mountain" | "capital
 
 export const NEUTRAL_MAX_TROOPS = 20;
 
+// On easy difficulty, all troop production runs at this fraction of normal speed.
+// Slows the pace so new players have more time to think and react.
+export const EASY_PRODUCTION_MULTIPLIER = 0.6;
+
 export const GOLD_PRODUCTION_PER_SECOND = {
   capital: 1 / 4,
   town: 1 / 6,

@@ -24,9 +24,10 @@ import { findSeaLaneBetween } from "../game/movement";
 import { areAllies, createInitialGameState, getTeamId } from "../game/state";
 import { saveGame } from "../game/storage";
 import { updateGame } from "../game/simulation";
+import { IRON_VALE_TERRITORIES, getTerritoryController } from "../game/territories";
 import type { Difficulty, GameState, MapTheme, PlayerMode } from "../game/types";
 import { renderGame } from "../render/canvasRenderer";
-import type { FloatingNotification } from "../render/canvasRenderer";
+import type { FloatingNotification, TerritoryFlash } from "../render/canvasRenderer";
 import {
   getDragTargetTileIdAtPoint,
   getCanvasPointFromEvent,
@@ -241,6 +242,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
   // Capture flash: maps tileId → game-time of the most recent ownership change.
   // Updated in the canvas render effect by diffing consecutive states.
   const captureFlashesRef = useRef<Map<string, number>>(new Map());
+  const territoryFlashesRef = useRef<Map<string, TerritoryFlash>>(new Map());
   const notificationsRef = useRef<FloatingNotification[]>([]);
   const nextNotifIdRef = useRef(0);
   const prevStateRef = useRef<GameState | null>(null);
@@ -255,9 +257,9 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
   const panStartRef = useRef<{ cssPoint: Point; panAtStart: Point } | null>(null);
   const isPanningRef = useRef(false);
 
-  // Game speed multiplier. 1 = real time, 2 = double speed.
-  const [speed, setSpeed] = useState<1 | 2>(1);
-  const speedRef = useRef<1 | 2>(1);
+  // Game speed multiplier. 0.5 = half speed, 1 = real time, 2 = double speed.
+  const [speed, setSpeed] = useState<0.5 | 1 | 2>(1);
+  const speedRef = useRef<0.5 | 1 | 2>(1);
 
   // Zoom level (1 = fitted-to-screen). zoomRef is always current for use in
   // [] effect closures; zoom state triggers a canvas re-render on change.
@@ -339,8 +341,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
   }
 
 
-  function handleSpeedToggle(): void {
-    const next: 1 | 2 = speedRef.current === 1 ? 2 : 1;
+  function handleSpeedChange(next: 0.5 | 1 | 2): void {
     speedRef.current = next;
     setSpeed(next);
   }
@@ -636,6 +637,23 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         (n) => state.now - n.createdAt < 2.5
       );
 
+      // Detect territory captures: when a new player gains full control of a territory.
+      for (const territory of IRON_VALE_TERRITORIES) {
+        const prevController = getTerritoryController(territory, prev.tiles);
+        const nextController = getTerritoryController(territory, state.tiles);
+        if (nextController !== null && nextController !== prevController) {
+          territoryFlashesRef.current.set(territory.id, {
+            controller: nextController,
+            captureTime: state.now,
+            tileIds: territory.tileIds,
+          });
+        }
+      }
+      // Prune expired territory flashes
+      for (const [id, flash] of territoryFlashesRef.current) {
+        if (state.now - flash.captureTime >= 1.4) territoryFlashesRef.current.delete(id);
+      }
+
       // Match end: play victory if the human team won, defeat otherwise.
       // Comparing against the human's teamId handles 2v2 correctly — a win
       // for the AI partner still reads as "we won" for the local player.
@@ -658,6 +676,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       sendFraction,
       mapTheme,
       captureFlashes: captureFlashesRef.current,
+      territoryFlashes: territoryFlashesRef.current,
       notifications: notificationsRef.current,
     });
   }, [state, dragSource, validTargetIds, optionsTileId, sendFraction, panOffset, zoom]);
@@ -954,7 +973,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         onResume={handleResume}
         onReset={resetGame}
         onReturnToMenu={onReturnToMenu}
-        onSpeedToggle={handleSpeedToggle}
+        onSpeedChange={handleSpeedChange}
         onChangeSendFraction={handleChangeSendFraction}
       />
       {state.phase === "preview" && (

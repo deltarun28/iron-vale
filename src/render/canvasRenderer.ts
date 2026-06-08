@@ -21,15 +21,28 @@
 import { asset } from "../assets";
 import { calculateSeaCost, findSeaLaneBetween } from "../game/movement";
 import { PRODUCTION_CAPS } from "../game/constants";
+import { IRON_VALE_TERRITORIES } from "../game/territories";
 import type { GameState, MapTheme, OwnerId, TerrainType } from "../game/types";
 import {
   axialToPixel,
   drawHexPath,
+  getHexCorners,
   getHexPolygon,
   getTileIdAtPoint,
   type HexLayout,
   type Point,
 } from "./geometry";
+
+// Axial direction vectors for each of the 6 hex edges (pointy-top).
+// Edge i (from corner[i] to corner[(i+1)%6]) faces the neighbor at coord + dir[i].
+const HEX_EDGE_DIRS: readonly { q: number; r: number }[] = [
+  { q:  1, r:  0 }, // edge 0 → E
+  { q:  0, r:  1 }, // edge 1 → SE
+  { q: -1, r:  1 }, // edge 2 → SW
+  { q: -1, r:  0 }, // edge 3 → W
+  { q:  0, r: -1 }, // edge 4 → NW
+  { q:  1, r: -1 }, // edge 5 → NE
+];
 
 // All three map art PNGs loaded once at module initialisation.
 const MAP_IMAGES: Record<MapTheme, HTMLImageElement> = {
@@ -57,6 +70,12 @@ export interface FloatingNotification {
   createdAt: number; // game time
 }
 
+export interface TerritoryFlash {
+  controller: OwnerId;
+  captureTime: number; // game time
+  tileIds: readonly string[];
+}
+
 export interface RenderOptions {
   selectedTileId: string | null;
   validTargetIds: string[];
@@ -70,6 +89,8 @@ export interface RenderOptions {
   // Maps tileId → game-time of capture; drives the brief flash ring on ownership changes.
   captureFlashes?: Map<string, number>;
   notifications?: FloatingNotification[];
+  // Maps territoryId → flash data; drives the pulsing boundary on territory capture.
+  territoryFlashes?: Map<string, TerritoryFlash>;
 }
 
 // Player palette — vivid, saturated tones that punch through the parchment map.
@@ -989,6 +1010,116 @@ function drawCaptureFlashes(
   ctx.restore();
 }
 
+// Builds a Map from "q,r" coord key → tileId for all tiles in tileDefinitions.
+// Used by boundary-drawing routines to check whether a neighbor is in a set.
+function buildCoordToTileId(state: GameState): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const [tileId, def] of Object.entries(state.tileDefinitions)) {
+    map.set(`${def.coord.q},${def.coord.r}`, tileId);
+  }
+  return map;
+}
+
+// Draws all exterior boundary edges of a set of tile IDs as a single path.
+// An edge is "exterior" when its neighbor across that edge is not in the set.
+function buildTerritoryBoundaryPath(
+  ctx: CanvasRenderingContext2D,
+  tileIds: readonly string[],
+  state: GameState,
+  layout: HexLayout,
+  coordToTileId: Map<string, string>
+): void {
+  const tileSet = new Set(tileIds);
+  ctx.beginPath();
+  for (const tileId of tileIds) {
+    const def = state.tileDefinitions[tileId];
+    if (!def) continue;
+    const center = axialToPixel(def.coord, layout);
+    const corners = getHexCorners(center, layout.size);
+    for (let i = 0; i < 6; i++) {
+      const dir = HEX_EDGE_DIRS[i]!;
+      const neighborKey = `${def.coord.q + dir.q},${def.coord.r + dir.r}`;
+      const neighborId = coordToTileId.get(neighborKey);
+      if (!neighborId || !tileSet.has(neighborId)) {
+        ctx.moveTo(corners[i]!.x, corners[i]!.y);
+        ctx.lineTo(corners[(i + 1) % 6]!.x, corners[(i + 1) % 6]!.y);
+      }
+    }
+  }
+}
+
+// Subtle permanent territory outlines drawn under tile content so players can
+// identify which hexes belong to each territory without cluttering the display.
+function drawTerritoryBorders(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout
+): void {
+  const coordToTileId = buildCoordToTileId(state);
+
+  ctx.save();
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = Math.max(2, layout.size * 0.055);
+  ctx.lineCap = "round";
+  ctx.setLineDash([layout.size * 0.12, layout.size * 0.10]);
+
+  for (const territory of IRON_VALE_TERRITORIES) {
+    // Colour hints at the territory terrain without being distracting.
+    const firstDef = state.tileDefinitions[territory.tileIds[0]!];
+    const terrain = firstDef?.terrain ?? "plains";
+    ctx.strokeStyle =
+      terrain === "mountain" ? "#a09080" :
+      terrain === "forest"   ? "#5a8050" :
+                               "#b09060";
+
+    buildTerritoryBoundaryPath(ctx, territory.tileIds, state, layout, coordToTileId);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+// Bright pulsing boundary flash when a player captures an entire territory.
+// Plays for ~1.4 seconds then fades out.
+const TERRITORY_FLASH_DURATION = 1.4;
+
+function drawTerritoryFlashes(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  flashes: Map<string, TerritoryFlash>
+): void {
+  const coordToTileId = buildCoordToTileId(state);
+
+  ctx.save();
+  ctx.lineCap = "round";
+
+  for (const flash of flashes.values()) {
+    const age = state.now - flash.captureTime;
+    if (age >= TERRITORY_FLASH_DURATION) continue;
+
+    const t = age / TERRITORY_FLASH_DURATION;
+    // Starts bright, pulses twice, then fades: envelope × sin(2 full cycles).
+    const envelope = 1 - t;
+    const pulse = 0.55 + 0.45 * Math.sin(t * Math.PI * 4);
+    const alpha = Math.max(0, envelope * pulse);
+
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = getOwnerStroke(flash.controller);
+    ctx.lineWidth = Math.max(5, layout.size * 0.14);
+    ctx.shadowColor = getOwnerStroke(flash.controller);
+    ctx.shadowBlur = layout.size * 0.5;
+
+    buildTerritoryBoundaryPath(ctx, flash.tileIds, state, layout, coordToTileId);
+    ctx.stroke();
+  }
+
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 // The main render function called once per animation frame.
 // Draws the full scene in order: background → sea lanes → tiles → action lines → drag line.
 export function renderGame(
@@ -1002,6 +1133,7 @@ export function renderGame(
   clearCanvas(ctx, canvas.width, canvas.height);
   drawMapBackground(ctx, layout, options.mapTheme ?? "default");
   drawSeaLanes(ctx, state, layout);
+  drawTerritoryBorders(ctx, state, layout);
 
   // Tiles with an in-flight attack headed toward them show a subtle warning ring.
   const underAttackIds = new Set(
@@ -1023,6 +1155,10 @@ export function renderGame(
   }
 
   drawActiveActions(ctx, state, layout);
+
+  if (options.territoryFlashes && options.territoryFlashes.size > 0) {
+    drawTerritoryFlashes(ctx, state, layout, options.territoryFlashes);
+  }
 
   if (options.captureFlashes && options.captureFlashes.size > 0) {
     drawCaptureFlashes(ctx, state, layout, options.captureFlashes);

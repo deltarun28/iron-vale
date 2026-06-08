@@ -31,7 +31,7 @@ interface HudProps {
   onResume: () => void;
   onReset: () => void;
   onReturnToMenu: () => void;
-  onSpeedToggle: () => void;
+  onSpeedChange: (speed: 0.5 | 1 | 2) => void;
   onChangeSendFraction: (fraction: number) => void;
 }
 
@@ -128,7 +128,7 @@ export function Hud({
   onResume,
   onReset,
   onReturnToMenu,
-  onSpeedToggle,
+  onSpeedChange,
   onChangeSendFraction,
 }: HudProps) {
   const viewer = state.players[playerId];
@@ -255,11 +255,19 @@ export function Hud({
             </button>
             <button
               type="button"
-              className={`hud__speed-btn${speed === 2 ? " hud__speed-btn--active" : ""}`}
-              onClick={onSpeedToggle}
-              aria-label="Toggle game speed"
+              className={`hud__speed-btn${speed === 0.5 ? " hud__speed-btn--active" : ""}`}
+              onClick={() => onSpeedChange(speed === 0.5 ? 1 : 0.5)}
+              aria-label="Half speed"
             >
-              {speed === 2 ? "2×" : "1×"}
+              ½×
+            </button>
+            <button
+              type="button"
+              className={`hud__speed-btn${speed === 2 ? " hud__speed-btn--active" : ""}`}
+              onClick={() => onSpeedChange(speed === 2 ? 1 : 2)}
+              aria-label="Double speed"
+            >
+              2×
             </button>
             <button type="button" onClick={isPaused ? onResume : onPause}>
               {isPaused ? "Resume" : "Pause"}

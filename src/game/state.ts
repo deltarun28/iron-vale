@@ -262,6 +262,16 @@ export function createInitialGameState(
     };
   }
 
+  // Easy mode: neutral tiles start with 1 fewer troop (minimum 1).
+  // Makes early expansion less costly and gives new players more breathing room.
+  if (difficulty === "easy") {
+    for (const tile of Object.values(tiles)) {
+      if (tile.owner === "neutral") {
+        tile.troops = Math.max(1, tile.troops - 1);
+      }
+    }
+  }
+
   const players: Partial<Record<PlayerId, PlayerState>> = {};
   for (const playerId of activePlayerIds) {
     const teamId = teamLayout[playerId];

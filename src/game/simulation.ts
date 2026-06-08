@@ -16,12 +16,18 @@
  */
 
 import {
+  EASY_PRODUCTION_MULTIPLIER,
   FORT,
   NEUTRAL_MAX_TROOPS,
   PRODUCTION_CAPS,
   TROOP_PRODUCTION_PER_SECOND,
   VETERAN,
 } from "./constants";
+import {
+  IRON_VALE_TERRITORIES,
+  getTerritoryBonus,
+  getTerritoryController,
+} from "./territories";
 import { resolveCombat } from "./combat";
 import { handleTileCaptureEconomy, updateGoldProduction } from "./economy";
 import {
@@ -139,6 +145,18 @@ function applyDecay(troops: number, deltaSeconds: number, capKey: keyof typeof P
 // Neutral tiles continue producing regardless of busy state.
 export function updateTroopProduction(state: GameState, deltaSeconds: number): GameState {
   const nextState = cloneGameState(state);
+  const difficultyMultiplier = nextState.ai.difficulty === "easy" ? EASY_PRODUCTION_MULTIPLIER : 1;
+
+  // Compute the flat troops/s bonus each player earns from fully-controlled territories.
+  // The bonus is added to every tile they own on top of normal terrain production.
+  const territoryBonusPerPlayer: Partial<Record<PlayerId, number>> = {};
+  for (const territory of IRON_VALE_TERRITORIES) {
+    const controller = getTerritoryController(territory, nextState.tiles);
+    if (controller !== null) {
+      const bonus = getTerritoryBonus(territory);
+      territoryBonusPerPlayer[controller] = (territoryBonusPerPlayer[controller] ?? 0) + bonus;
+    }
+  }
 
   for (const tile of Object.values(nextState.tiles)) {
     const definition = nextState.tileDefinitions[tile.id];
@@ -171,9 +189,11 @@ export function updateTroopProduction(state: GameState, deltaSeconds: number): G
 
     const multiplier = getProductionMultiplier(tile.troops, capKey);
 
-    // Core production formula: rate * multiplier * time = troops gained this tick.
+    // Core production formula: (terrain rate + territory bonus) × time = troops gained this tick.
+    // Territory bonus bypasses the cap multiplier — it's a strategic bonus, not terrain production.
+    const territoryBonus = isPlayer(tile.owner) ? (territoryBonusPerPlayer[tile.owner] ?? 0) : 0;
     const prevTroops = tile.troops;
-    let nextTroops = tile.troops + rate * multiplier * deltaSeconds;
+    let nextTroops = tile.troops + (rate * multiplier + territoryBonus) * deltaSeconds * difficultyMultiplier;
 
     if (tile.owner === "neutral") {
       nextTroops = Math.min(nextTroops, NEUTRAL_MAX_TROOPS);
