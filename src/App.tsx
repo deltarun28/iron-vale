@@ -11,6 +11,7 @@ import { clearSavedGame, hasSavedGame, loadSavedGame } from "./game/storage";
 import type { Difficulty, GameState, MapSize, MapTheme, PlayerMode } from "./game/types";
 import { GameScreen } from "./ui/GameScreen";
 import { StartScreen } from "./ui/StartScreen";
+import { UpdatePrompt } from "./ui/UpdatePrompt";
 import "./styles.css";
 
 type Screen = "start" | "game";
@@ -61,21 +62,27 @@ export default function App() {
 
   if (screen === "start") {
     return (
-      <StartScreen
-        hasSave={saveExists}
-        onPlay={handlePlay}
-        onContinue={handleContinue}
-      />
+      <>
+        <StartScreen
+          hasSave={saveExists}
+          onPlay={handlePlay}
+          onContinue={handleContinue}
+        />
+        <UpdatePrompt />
+      </>
     );
   }
 
   return (
-    <GameScreen
-      difficulty={difficulty}
-      mapTheme={mapTheme}
-      playerMode={playerMode}
-      onReturnToMenu={handleReturnToMenu}
-      {...(initialState !== undefined ? { initialState } : {})}
-    />
+    <>
+      <GameScreen
+        difficulty={difficulty}
+        mapTheme={mapTheme}
+        playerMode={playerMode}
+        onReturnToMenu={handleReturnToMenu}
+        {...(initialState !== undefined ? { initialState } : {})}
+      />
+      <UpdatePrompt />
+    </>
   );
 }

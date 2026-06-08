@@ -1137,3 +1137,36 @@ button {
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
 }
+
+/* ── Update available banner ──────────────────────────────────────────────── */
+.update-prompt {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #3d2b1b;
+  color: #f5ecd8;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.update-prompt button {
+  padding: 4px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.15);
+  color: #f5ecd8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-prompt button:active {
+  background: rgba(255, 255, 255, 0.28);
+}
