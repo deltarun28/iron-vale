@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { asset } from "../assets";
 import { getActivePlayerIds, getTeamId } from "../game/state";
+import { loadStats, recordGameResult } from "../game/stats";
 import type { GameState, PlayerId } from "../game/types";
 
 interface EndGameProps {
@@ -30,6 +32,13 @@ export function EndGame({
 }: EndGameProps) {
   const humanTeam = getTeamId(state, humanPlayerId);
   const won = state.winningTeam !== null && state.winningTeam === humanTeam;
+
+  // Record this game and snapshot the updated career stats on first render.
+  // useState lazy init runs once on mount so the result is recorded exactly once.
+  const [{ career, isNewBest }] = useState(() => {
+    const newBest = recordGameResult(won, state.now);
+    return { career: loadStats(), isNewBest: newBest };
+  });
 
   const activeIds = getActivePlayerIds(state);
   const allies = activeIds.filter(
@@ -93,6 +102,16 @@ export function EndGame({
 
         <div className="end-game__time">
           {won ? "Conquered in" : "Held for"} {formatDuration(state.now)}
+        </div>
+
+        <div className={`end-game__career${isNewBest ? " end-game__career--best" : ""}`}>
+          {career.wins}W · {career.gamesPlayed}G
+          {isNewBest && career.fastestWin !== null && (
+            <> · New best: {formatDuration(career.fastestWin)}</>
+          )}
+          {!isNewBest && career.fastestWin !== null && (
+            <> · Best: {formatDuration(career.fastestWin)}</>
+          )}
         </div>
 
         <div className="end-game__divider" />

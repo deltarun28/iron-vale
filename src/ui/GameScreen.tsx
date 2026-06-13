@@ -252,10 +252,13 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
   const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
   const panOffsetRef = useRef<Point>({ x: 0, y: 0 });
 
-  // Set when a non-icon pointer-down occurs. Holds the start CSS point and the
-  // pan offset at that moment so deltas can be applied relative to the start.
-  const panStartRef = useRef<{ cssPoint: Point; panAtStart: Point } | null>(null);
-  const isPanningRef = useRef(false);
+  // Joystick: normalized direction vector set by the joystick thumb.
+  // Applied to pan each rAF tick; zeroed when the joystick is released.
+  const joystickDeltaRef = useRef<Point>({ x: 0, y: 0 });
+
+  // Edge-scroll: set each move event when a drag is near a canvas edge;
+  // drives continuous pan toward the drag target when the map needs to follow.
+  const edgeScrollRef = useRef<Point>({ x: 0, y: 0 });
 
   // Game speed multiplier. 0.5 = half speed, 1 = real time, 2 = double speed.
   const [speed, setSpeed] = useState<0.5 | 1 | 2>(1);
@@ -268,6 +271,10 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
 
   // Tracks the start distance and midpoint of an active two-finger pinch.
   const pinchRef = useRef<{ dist: number; midCss: Point } | null>(null);
+
+  // CSS-pixel offset of the joystick thumb from the base centre; drives the visual.
+  const [joystickThumb, setJoystickThumb] = useState<Point>({ x: 0, y: 0 });
+  const joystickBaseRef = useRef<HTMLDivElement>(null);
 
   // Drag path: ordered list of tile IDs the finger/cursor has passed through during
   // this drag. Only player-owned tiles adjacent to the previous path tile are added.
@@ -298,8 +305,8 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     tapCandidateRef.current = null;
     isPausedRef.current = false;
     panOffsetRef.current = { x: 0, y: 0 };
-    panStartRef.current = null;
-    isPanningRef.current = false;
+    edgeScrollRef.current = { x: 0, y: 0 };
+    joystickDeltaRef.current = { x: 0, y: 0 };
     zoomRef.current = 1.0;
     speedRef.current = 1;
     pinchRef.current = null;
@@ -309,6 +316,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     setOptionsTileId(null);
     setIsPaused(false);
     setPanOffset({ x: 0, y: 0 });
+    setJoystickThumb({ x: 0, y: 0 });
     setZoom(1.0);
     setSpeed(1);
     setPreviewSecondsLeft(null);
@@ -346,6 +354,39 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     setSpeed(next);
   }
 
+  // ─── Joystick ──────────────────────────────────────────────────────────────
+
+  const JOYSTICK_RADIUS = 36;
+
+  function handleJoystickPointerDown(e: React.PointerEvent<HTMLDivElement>): void {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function handleJoystickPointerMove(e: React.PointerEvent<HTMLDivElement>): void {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const base = joystickBaseRef.current;
+    if (!base) return;
+    const rect = base.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    let dx = e.clientX - cx;
+    let dy = e.clientY - cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > JOYSTICK_RADIUS) {
+      const scale = JOYSTICK_RADIUS / dist;
+      dx *= scale;
+      dy *= scale;
+    }
+    setJoystickThumb({ x: dx, y: dy });
+    joystickDeltaRef.current = { x: dx / JOYSTICK_RADIUS, y: dy / JOYSTICK_RADIUS };
+  }
+
+  function handleJoystickPointerUp(): void {
+    joystickDeltaRef.current = { x: 0, y: 0 };
+    setJoystickThumb({ x: 0, y: 0 });
+  }
+
   // ─── Pointer-down: troop drag (from icon) or pan (anywhere else) ──────────
 
   function handlePointerDown(
@@ -370,8 +411,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       dragSourceRef.current = null;
       dragPointRef.current = null;
       tapCandidateRef.current = null;
-      panStartRef.current = null;
-      isPanningRef.current = false;
+      edgeScrollRef.current = { x: 0, y: 0 };
       setDragSource(null);
       return;
     }
@@ -411,9 +451,6 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       }
     }
 
-    // Not a player tile — pan gesture (or tap if movement stays small).
-    panStartRef.current = { cssPoint, panAtStart: { ...panOffsetRef.current } };
-    isPanningRef.current = false;
   }
 
   // ─── Touch-end: resolve a touch drag ──────────────────────────────────────
@@ -437,8 +474,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     dragPathRef.current = [];
     dragLastTileRef.current = null;
     tapCandidateRef.current = null;
-    panStartRef.current = null;
-    isPanningRef.current = false;
+    edgeScrollRef.current = { x: 0, y: 0 };
     pinchRef.current = null;
     setDragSource(null);
 
@@ -466,8 +502,21 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
 
     if (!source) return;
 
-    // Multi-hop chain reinforce: player dragged through 2+ owned tiles.
-    if (dragPath.length >= 3) {
+    const releasedTileId = getDragTargetTileIdAtPoint({
+      point: toBufferPoint(cssPoint),
+      layout,
+      tileCoords: buildTileCoords(state),
+      radiusFraction: 0.85,
+    });
+
+    // If released on a tile outside the drag path (e.g. a sea lane target reached
+    // by dragging across friendly land tiles), prefer a direct action so the sea
+    // attack isn't swallowed by the chain-reinforce check.
+    const releasedOffPath = releasedTileId !== null
+      && releasedTileId !== source
+      && !dragPath.includes(releasedTileId);
+
+    if (!releasedOffPath && dragPath.length >= 3) {
       const fraction = sendFraction;
       setState((currentState) => {
         const sourceTile = currentState.tiles[dragPath[0]!];
@@ -476,12 +525,6 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       });
       return;
     }
-
-    const releasedTileId = getDragTargetTileIdAtPoint({
-      point: toBufferPoint(cssPoint),
-      layout,
-      tileCoords: buildTileCoords(state),
-    });
 
     if (!releasedTileId || releasedTileId === source) return;
 
@@ -516,8 +559,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     dragPointRef.current = null;
     dragPathRef.current = [];
     dragLastTileRef.current = null;
-    panStartRef.current = null;
-    isPanningRef.current = false;
+    edgeScrollRef.current = { x: 0, y: 0 };
     pinchRef.current = null;
     setDragSource(null);
   }
@@ -530,8 +572,23 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
 
     function tick(time: number): void {
       // Always keep lastTime current so the delta is smooth when resuming from pause.
-      const deltaSeconds = Math.min(0.05, (time - lastTime) / 1000) * speedRef.current;
+      const rawDelta = Math.min(0.05, (time - lastTime) / 1000);
+      const deltaSeconds = rawDelta * speedRef.current;
       lastTime = time;
+
+      // Apply joystick and edge-scroll panning (independent of game speed).
+      const jDelta = joystickDeltaRef.current;
+      const eScroll = edgeScrollRef.current;
+      if (jDelta.x !== 0 || jDelta.y !== 0 || eScroll.x !== 0 || eScroll.y !== 0) {
+        const tileSize = layoutRef.current?.size ?? 60;
+        const rawPan = {
+          x: panOffsetRef.current.x + eScroll.x * tileSize * 2 * rawDelta - jDelta.x * tileSize * 3 * rawDelta,
+          y: panOffsetRef.current.y + eScroll.y * tileSize * 2 * rawDelta - jDelta.y * tileSize * 3 * rawDelta,
+        };
+        const clampedPan = clampPan(rawPan, tileSize);
+        panOffsetRef.current = clampedPan;
+        setPanOffset(clampedPan);
+      }
 
       // Preview phase: freeze the game and run a real-time 4-second countdown.
       // The first second shows the map and team info; the last 3 count 3→2→1.
@@ -696,30 +753,18 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     // Using window-level listeners (not canvas onMouseMove/onMouseUp) means the
     // drag stays active even when the cursor moves over the HUD overlay.
 
-    function applyPanMove(cssPoint: Point): void {
-      const panStart = panStartRef.current;
-      if (!panStart) return;
-
-      const dx = cssPoint.x - panStart.cssPoint.x;
-      const dy = cssPoint.y - panStart.cssPoint.y;
-
-      // Latch into panning mode once the finger/cursor moves more than 8 CSS px.
-      if (!isPanningRef.current && dx * dx + dy * dy > 64) {
-        isPanningRef.current = true;
-        tapCandidateRef.current = null; // movement too large to be a tap
-      }
-
-      if (isPanningRef.current) {
-        const size = layoutRef.current?.size ?? 60;
-        const dpr = window.devicePixelRatio;
-        const raw = {
-          x: panStart.panAtStart.x + dx * dpr,
-          y: panStart.panAtStart.y + dy * dpr,
-        };
-        const clamped = clampPan(raw, size);
-        panOffsetRef.current = clamped;
-        setPanOffset(clamped); // triggers canvas re-render via panOffset dep
-      }
+    // Sets edge-scroll velocity when the drag pointer is near a canvas edge.
+    // Positive x means map should pan right (reveal west); negative means left (reveal east).
+    function updateEdgeScroll(cssPoint: Point, canvas: HTMLCanvasElement): void {
+      const rect = canvas.getBoundingClientRect();
+      const EDGE_ZONE = 80;
+      let ex = 0;
+      let ey = 0;
+      if (cssPoint.x < EDGE_ZONE) ex = (EDGE_ZONE - cssPoint.x) / EDGE_ZONE;
+      else if (cssPoint.x > rect.width - EDGE_ZONE) ex = -(cssPoint.x - (rect.width - EDGE_ZONE)) / EDGE_ZONE;
+      if (cssPoint.y < EDGE_ZONE) ey = (EDGE_ZONE - cssPoint.y) / EDGE_ZONE;
+      else if (cssPoint.y > rect.height - EDGE_ZONE) ey = -(cssPoint.y - (rect.height - EDGE_ZONE)) / EDGE_ZONE;
+      edgeScrollRef.current = { x: ex, y: ey };
     }
 
     // Extends or trims the drag path as the cursor/finger enters a new tile.
@@ -755,36 +800,28 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     }
 
     function onGlobalMouseMove(event: MouseEvent): void {
+      if (dragSourceRef.current === null) return;
       const canvas = canvasRef.current;
       if (!canvas) return;
       const cssPoint = getCanvasPointFromEvent(event, canvas);
       if (!cssPoint) return;
-
-      if (dragSourceRef.current !== null) {
-        dragPointRef.current = toBufferPoint(cssPoint);
-        updateDragPath(cssPoint);
-      } else {
-        applyPanMove(cssPoint);
-      }
+      dragPointRef.current = toBufferPoint(cssPoint);
+      updateDragPath(cssPoint);
+      updateEdgeScroll(cssPoint, canvas);
     }
 
     function onGlobalMouseUp(event: MouseEvent): void {
       const source = dragSourceRef.current;
       const dragPath = dragPathRef.current;
       const tapCandidate = tapCandidateRef.current;
-      const wasPanning = isPanningRef.current;
 
       dragSourceRef.current = null;
       dragPointRef.current = null;
       dragPathRef.current = [];
       dragLastTileRef.current = null;
       tapCandidateRef.current = null;
-      panStartRef.current = null;
-      isPanningRef.current = false;
+      edgeScrollRef.current = { x: 0, y: 0 };
       setDragSource(null); // React state setter is stable - safe to use in [] effect
-
-      // Pan end — view already updated, nothing to resolve.
-      if (wasPanning) return;
 
       if (source === null && tapCandidate === null) return;
 
@@ -817,8 +854,23 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
 
       if (source === null) return;
 
-      // Multi-hop chain reinforce: player dragged through 2+ owned tiles.
-      if (dragPath.length >= 3) {
+      const releasedTileId = getDragTargetTileIdAtPoint({
+        point: toBufferPoint(cssPoint),
+        layout,
+        // tileDefsRef.current is static map data - safe to read from a [] effect closure.
+        tileCoords: Object.fromEntries(
+          Object.entries(tileDefsRef.current).map(([id, def]) => [id, def.coord])
+        ),
+        radiusFraction: 0.85,
+      });
+
+      // Prefer a direct action (e.g. sea attack) when releasing off the drag path,
+      // even if friendly tiles were crossed en route.
+      const releasedOffPath = releasedTileId !== null
+        && releasedTileId !== source
+        && !dragPath.includes(releasedTileId);
+
+      if (!releasedOffPath && dragPath.length >= 3) {
         const fraction = sendFractionRef.current;
         setState((currentState) => {
           const sourceTile = currentState.tiles[dragPath[0]!];
@@ -827,15 +879,6 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         });
         return;
       }
-
-      const releasedTileId = getDragTargetTileIdAtPoint({
-        point: toBufferPoint(cssPoint),
-        layout,
-        // tileDefsRef.current is static map data - safe to read from a [] effect closure.
-        tileCoords: Object.fromEntries(
-          Object.entries(tileDefsRef.current).map(([id, def]) => [id, def.coord])
-        ),
-      });
 
       if (!releasedTileId || releasedTileId === source) return;
 
@@ -894,18 +937,15 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         return;
       }
 
-      // Prevent page scroll whenever a drag or pan is in progress.
-      if (dragSourceRef.current === null && panStartRef.current === null) return;
+      // Prevent page scroll whenever a troop drag is in progress.
+      if (dragSourceRef.current === null) return;
       event.preventDefault();
       const cssPoint = getCanvasPointFromEvent(event, canvas);
       if (!cssPoint) return;
 
-      if (dragSourceRef.current !== null) {
-        dragPointRef.current = toBufferPoint(cssPoint);
-        updateDragPath(cssPoint);
-      } else {
-        applyPanMove(cssPoint);
-      }
+      dragPointRef.current = toBufferPoint(cssPoint);
+      updateDragPath(cssPoint);
+      updateEdgeScroll(cssPoint, canvas);
     }
 
     // ── Ctrl+scroll / trackpad-pinch zoom (desktop) ──────────────────────────
@@ -976,6 +1016,19 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         onSpeedChange={handleSpeedChange}
         onChangeSendFraction={handleChangeSendFraction}
       />
+      <div
+        className="joystick-base"
+        ref={joystickBaseRef}
+        onPointerDown={handleJoystickPointerDown}
+        onPointerMove={handleJoystickPointerMove}
+        onPointerUp={handleJoystickPointerUp}
+        onPointerCancel={handleJoystickPointerUp}
+      >
+        <div
+          className="joystick-thumb"
+          style={{ transform: `translate(${joystickThumb.x}px, ${joystickThumb.y}px)` }}
+        />
+      </div>
       {state.phase === "preview" && (
         <PreGameOverlay state={state} secondsLeft={previewSecondsLeft} />
       )}

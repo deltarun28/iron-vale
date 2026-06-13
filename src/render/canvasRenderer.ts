@@ -173,6 +173,8 @@ function drawHexTile(params: {
 
   const polygon = getHexPolygon(definition.coord, layout);
 
+  drawOwnershipTint(ctx, polygon.center, polygon.corners, layout.size, tile.owner);
+
   // Only draw a hex border for interactive states — the PNG provides all
   // territory art so there is no ownership tint or regular grid stroke.
   if (selected || validTarget) {
@@ -212,8 +214,6 @@ function drawHexTile(params: {
   if (tile.busyUntil !== null && tile.busyUntil > state.now) {
     drawBusyRing(ctx, polygon.center, layout.size, tile.busyUntil - state.now);
   }
-
-  drawTileLabel(ctx, polygon.center, definition.name, layout.size);
 }
 
 // Draws simple terrain detail shapes inside each hex.
@@ -480,7 +480,7 @@ function drawTroopMarker(
 
   const cx = center.x;
   const cy = center.y + 10;
-  const r  = 18;
+  const r  = 36;
 
   ctx.fillStyle = getOwnerFill(owner);
   ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
@@ -509,7 +509,7 @@ function drawTroopMarker(
   ctx.stroke();
 
   ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 16px sans-serif";
+  ctx.font = "bold 26px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(String(Math.floor(troops)), cx, cy);
@@ -561,24 +561,71 @@ function drawBusyRing(
 ): void {
   ctx.save();
 
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-  ctx.lineWidth = 4;
+  const ringR = Math.max(size * 0.38, 44);
+  const cx = center.x;
+  const cy = center.y + 10;
+  const startAngle = -Math.PI / 2;
 
+  // Dim background track so the foreground arc pops.
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+  ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.arc(center.x, center.y + 10, size * 0.38, 0, Math.PI * 2);
+  ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
   ctx.stroke();
 
-  if (secondsLeft > 0) {
-    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-    ctx.font = `bold ${Math.max(9, size * 0.18)}px sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(
-      secondsLeft < 10 ? secondsLeft.toFixed(1) + "s" : Math.ceil(secondsLeft) + "s",
-      center.x + size * 0.44,
-      center.y + 10
-    );
+  // Sweeping foreground arc — length shrinks as the tile becomes free.
+  // 8 s is the reference full-circle; anything longer starts as a full arc.
+  const fraction = Math.min(secondsLeft / 8, 1);
+  if (fraction > 0.01) {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.arc(cx, cy, ringR, startAngle, startAngle + fraction * Math.PI * 2);
+    ctx.stroke();
   }
+
+  ctx.restore();
+}
+
+// Returns the R,G,B components for the player's ownership tint gradient.
+function getOwnerTintRgb(owner: OwnerId): string | null {
+  switch (owner) {
+    case "player1": return "46, 126, 200";
+    case "player2": return "196, 44, 44";
+    case "player3": return "44, 140, 60";
+    case "player4": return "196, 160, 12";
+    default: return null;
+  }
+}
+
+// Radial gradient centred on the troop marker. Full 10 % opacity at the centre,
+// fading to zero at 80 % of the tile radius (stopping well before the edge so
+// neighbouring player colours don't create a hard border between tiles).
+function drawOwnershipTint(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  corners: Point[],
+  size: number,
+  owner: OwnerId
+): void {
+  const rgb = getOwnerTintRgb(owner);
+  if (!rgb) return;
+
+  ctx.save();
+
+  // Clip to the hex polygon so the gradient stays inside this tile only.
+  drawHexPath(ctx, corners);
+  ctx.clip();
+
+  const cx = center.x;
+  const cy = center.y + 10; // same y-centre as the troop marker
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.8);
+  grad.addColorStop(0, `rgba(${rgb}, 0.10)`);
+  grad.addColorStop(1, `rgba(${rgb}, 0)`);
+
+  ctx.fillStyle = grad;
+  ctx.fillRect(center.x - size, center.y - size, size * 2, size * 2);
 
   ctx.restore();
 }

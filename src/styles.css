@@ -309,6 +309,17 @@ button {
   margin-top: -4px;
 }
 
+.end-game__career {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(36, 27, 18, 0.38);
+  text-align: center;
+}
+
+.end-game__career--best {
+  color: #9a6e10;
+}
+
 .end-game__divider {
   width: 100%;
   height: 1px;
@@ -1136,6 +1147,38 @@ button {
     padding: 12px 20px;
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
+}
+
+/* ── Joystick ──────────────────────────────────────────────────────────────── */
+
+.joystick-base {
+  position: absolute;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  left: 16px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.28);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  touch-action: none;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+  cursor: grab;
+}
+
+.joystick-base:active {
+  cursor: grabbing;
+}
+
+.joystick-thumb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
 }
 
 /* ── Update available banner ──────────────────────────────────────────────── */
