@@ -29,10 +29,12 @@ export function HowToPlay({ onClose }: HowToPlayProps) {
           <section className="how-to-play__section">
             <h3>Controls</h3>
             <ul>
-              <li><strong>Drag a territory you own</strong> — send troops to an adjacent territory</li>
-              <li><strong>Tap a tile</strong> — open its info panel</li>
-              <li><strong>Drag empty terrain or sea</strong> — pan the map</li>
-              <li><strong>Ctrl + scroll / pinch</strong> — zoom in or out</li>
+              <li><strong>Drag a territory you own</strong> — send troops to an adjacent territory, enemy territory, or across a sea lane</li>
+              <li><strong>Drag through multiple owned territories</strong> — chain-reinforce along the path</li>
+              <li><strong>Drag to the screen edge</strong> — the map scrolls in that direction while you hold</li>
+              <li><strong>Tap a tile</strong> — open its info and upgrade panel</li>
+              <li><strong>Joystick (bottom-left)</strong> — pan the map</li>
+              <li><strong>Pinch / Ctrl + scroll</strong> — zoom in or out</li>
             </ul>
           </section>
 
@@ -130,6 +132,20 @@ export function HowToPlay({ onClose }: HowToPlayProps) {
               <li>Control more territory to out-produce your opponent</li>
               <li>Watch the AI's gold — sea raids become expensive fast</li>
             </ul>
+          </section>
+
+          <section className="how-to-play__section">
+            <h3>Button Reference</h3>
+            <ul>
+              <li><strong>¼ ½ ¾ All</strong> — fraction of troops sent each time you drag. All sends the full garrison.</li>
+              <li><strong>½×</strong> — slow the game to half speed. Tap again to return to normal.</li>
+              <li><strong>2×</strong> — double game speed. Tap again to return to normal.</li>
+              <li><strong>Pause</strong> — freeze the game. From the pause menu you can restart or return to the main menu.</li>
+              <li><strong>Sound / Muted</strong> — toggle audio on or off.</li>
+              <li><strong>Fortify (tap a tile → 5g)</strong> — add one fortification level. Up to five levels, each adding defence and slowing attackers.</li>
+              <li><strong>Armour (tap a tile → 5g)</strong> — equip the garrison for +25% attack and defence in their next battle. Consumed after one fight.</li>
+            </ul>
+            <p>The coloured strip below the top panels shows each side's share of the map at a glance.</p>
           </section>
         </div>
       </div>
