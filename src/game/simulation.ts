@@ -41,6 +41,7 @@ import {
   getActivePlayerIds,
   isPlayer,
 } from "./state";
+import { createLandAction } from "./actions";
 import type {
   ActiveAction,
   GameState,
@@ -220,49 +221,27 @@ function resolveReinforceAction(state: GameState, action: ActiveAction): GameSta
 
   if (!target) return nextState;
 
-  // If there are more hops in a chained move, continue rather than deposit.
+  // If there are more hops in a chained move, deposit troops then hand off to
+  // continueChain, which re-applies the fraction and correctly dispatches the
+  // next leg as an attack or reinforce depending on who owns that tile.
   if (action.remainingPath && action.remainingPath.length > 0) {
-    const [nextTargetId, ...newRemaining] = action.remainingPath;
-    if (!nextTargetId) {
+    if (!action.remainingPath[0]) {
       // Malformed path — deposit here as a safe fallback.
       target.troops += action.troopsSent;
       return nextState;
     }
 
-    // If the intermediate tile was captured while troops were in transit, abort
-    // the chain (troops are lost — they can't pass through enemy territory).
+    // Abort if this pass-through tile was captured — troops can't cross enemy territory.
     if (target.owner !== action.owner) return nextState;
 
-    const passThroughDef = nextState.tileDefinitions[action.targetTileId];
-    const nextTargetDef = nextState.tileDefinitions[nextTargetId];
-    if (!passThroughDef || !nextTargetDef) {
-      target.troops += action.troopsSent;
-      return nextState;
-    }
+    target.troops += action.troopsSent;
+    return continueChain(nextState, action, action.targetTileId);
+  }
 
-    const legDuration = calculateLandMoveTime(passThroughDef, nextTargetDef, action.troopsSent);
-    const legResolvesAt = nextState.now + legDuration;
-
-    // Mark the pass-through tile busy while troops move on so it can't
-    // simultaneously dispatch a second action in the same direction.
-    target.busyUntil = legResolvesAt;
-
-    // Strip remainingPath from the spread so the stale value never bleeds
-    // into the next leg. Without this, the last leg before the destination
-    // would inherit the old path, attempt C→C, and lock the tile forever.
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { remainingPath: _stale, ...actionBase } = action;
-    nextState.activeActions.push({
-      ...actionBase,
-      id: `action_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      sourceTileId: action.targetTileId,
-      targetTileId: nextTargetId,
-      startedAt: nextState.now,
-      resolvesAt: legResolvesAt,
-      ...(newRemaining.length > 0 ? { remainingPath: newRemaining } : {}),
-    });
-
-    return nextState;
+  // If the tile was captured while troops were in transit, attack it instead
+  // of reinforcing the enemy who now holds it.
+  if (target.owner !== action.owner) {
+    return resolveAttackAction(state, { ...action, type: "land_attack" });
   }
 
   // Final destination — deposit troops normally.
@@ -277,6 +256,34 @@ function resolveReinforceAction(state: GameState, action: ActiveAction): GameSta
   target.defVetLevel = Math.max(target.defVetLevel, action.attackerDefVetLevel) as 0 | 1 | 2 | 3;
 
   return nextState;
+}
+
+// After a tile is taken or reinforced, continue a chained move to the next hop
+// by re-applying sendFraction to the new tile total.
+function continueChain(state: GameState, action: ActiveAction, fromTileId: string): GameState {
+  if (!action.remainingPath || action.remainingPath.length === 0) return state;
+
+  const [nextTileId, ...rest] = action.remainingPath;
+  if (!nextTileId) return state;
+
+  const tile = state.tiles[fromTileId];
+  if (!tile || tile.owner !== action.owner) return state;
+
+  const fraction = action.sendFraction ?? 1;
+  const nextTroopsSent = Math.min(
+    Math.max(1, Math.floor(tile.troops * fraction)),
+    tile.troops - 1
+  );
+
+  return createLandAction({
+    state,
+    playerId: action.owner,
+    sourceTileId: fromTileId,
+    targetTileId: nextTileId,
+    troopsSent: nextTroopsSent,
+    ...(rest.length > 0 ? { remainingPath: rest } : {}),
+    sendFraction: fraction,
+  });
 }
 
 function resolveAttackAction(state: GameState, action: ActiveAction): GameState {
@@ -294,7 +301,7 @@ function resolveAttackAction(state: GameState, action: ActiveAction): GameState 
   // the troops instead of running combat against friendly forces.
   if (target.owner === action.owner) {
     target.troops += action.troopsSent;
-    return nextState;
+    return continueChain(nextState, action, action.targetTileId);
   }
 
   const previousOwner = target.owner;
@@ -355,7 +362,7 @@ function resolveAttackAction(state: GameState, action: ActiveAction): GameState 
     newOwner: action.owner,
   });
 
-  return nextState;
+  return continueChain(nextState, action, action.targetTileId);
 }
 
 // Finds all actions whose resolvesAt timestamp has passed, resolves them,

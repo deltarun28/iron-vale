@@ -267,9 +267,9 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   // drives continuous pan toward the drag target when the map needs to follow.
   const edgeScrollRef = useRef<Point>({ x: 0, y: 0 });
 
-  // Game speed multiplier. 0.5 = half speed, 1 = real time, 2 = double speed.
-  const [speed, setSpeed] = useState<0.5 | 1 | 2>(1);
-  const speedRef = useRef<0.5 | 1 | 2>(1);
+  // Game speed multiplier. Cycles 0.5 → 1 → 1.5 → 2.
+  const [speed, setSpeed] = useState<0.5 | 1 | 1.5 | 2>(1);
+  const speedRef = useRef<0.5 | 1 | 1.5 | 2>(1);
 
   // Zoom level (1 = fitted-to-screen). zoomRef is always current for use in
   // [] effect closures; zoom state triggers a canvas re-render on change.
@@ -356,7 +356,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   }
 
 
-  function handleSpeedChange(next: 0.5 | 1 | 2): void {
+  function handleSpeedChange(next: 0.5 | 1 | 1.5 | 2): void {
     speedRef.current = next;
     setSpeed(next);
   }
@@ -516,19 +516,30 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       radiusFraction: 0.85,
     });
 
-    // If released on a tile outside the drag path (e.g. a sea lane target reached
-    // by dragging across friendly land tiles), prefer a direct action so the sea
-    // attack isn't swallowed by the chain-reinforce check.
+    // Enemy tiles are filtered from the drag path during dragging, so if the
+    // release tile is adjacent to the last path tile, extend the path to include
+    // it as the final chain target (handles A→B→C where C is enemy).
+    let effectivePath = dragPath;
+    const lastInPath = dragPath[dragPath.length - 1];
+    if (lastInPath && releasedTileId && releasedTileId !== source && !dragPath.includes(releasedTileId)) {
+      const lastDef = state.tileDefinitions[lastInPath];
+      if (lastDef?.adjacent.includes(releasedTileId)) {
+        effectivePath = [...dragPath, releasedTileId];
+      }
+    }
+
+    // Prefer a direct action when released off the effective path (e.g. a sea
+    // lane target) so sea attacks aren't swallowed by the chain-reinforce check.
     const releasedOffPath = releasedTileId !== null
       && releasedTileId !== source
-      && !dragPath.includes(releasedTileId);
+      && !effectivePath.includes(releasedTileId);
 
-    if (!releasedOffPath && dragPath.length >= 3) {
+    if (!releasedOffPath && effectivePath.length >= 3) {
       const fraction = sendFraction;
       setState((currentState) => {
-        const sourceTile = currentState.tiles[dragPath[0]!];
+        const sourceTile = currentState.tiles[effectivePath[0]!];
         const troopsSent = sourceTile ? Math.max(1, Math.floor(sourceTile.troops * fraction)) : 1;
-        return createChainedReinforceAction({ state: currentState, playerId: "player1", path: dragPath, troopsSent });
+        return createChainedReinforceAction({ state: currentState, playerId: "player1", path: effectivePath, troopsSent, sendFraction: fraction });
       });
       return;
     }
@@ -877,18 +888,30 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
         radiusFraction: 0.85,
       });
 
-      // Prefer a direct action (e.g. sea attack) when releasing off the drag path,
-      // even if friendly tiles were crossed en route.
+      // Enemy tiles are filtered from the drag path during dragging, so if the
+      // release tile is adjacent to the last path tile, extend the path to include
+      // it as the final chain target (handles A→B→C where C is enemy).
+      let effectivePath = dragPath;
+      const lastInPath = dragPath[dragPath.length - 1];
+      if (lastInPath && releasedTileId && releasedTileId !== source && !dragPath.includes(releasedTileId)) {
+        const lastDef = tileDefsRef.current[lastInPath];
+        if (lastDef?.adjacent.includes(releasedTileId)) {
+          effectivePath = [...dragPath, releasedTileId];
+        }
+      }
+
+      // Prefer a direct action (e.g. sea attack) when released off the effective
+      // path, even if friendly tiles were crossed en route.
       const releasedOffPath = releasedTileId !== null
         && releasedTileId !== source
-        && !dragPath.includes(releasedTileId);
+        && !effectivePath.includes(releasedTileId);
 
-      if (!releasedOffPath && dragPath.length >= 3) {
+      if (!releasedOffPath && effectivePath.length >= 3) {
         const fraction = sendFractionRef.current;
         setState((currentState) => {
-          const sourceTile = currentState.tiles[dragPath[0]!];
+          const sourceTile = currentState.tiles[effectivePath[0]!];
           const troopsSent = sourceTile ? Math.max(1, Math.floor(sourceTile.troops * fraction)) : 1;
-          return createChainedReinforceAction({ state: currentState, playerId: "player1", path: dragPath, troopsSent });
+          return createChainedReinforceAction({ state: currentState, playerId: "player1", path: effectivePath, troopsSent, sendFraction: fraction });
         });
         return;
       }

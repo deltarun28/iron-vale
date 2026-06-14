@@ -169,6 +169,11 @@ export interface ActiveAction {
   // When a leg resolves and this is non-empty, troops continue to the next tile
   // rather than depositing at the current target.
   remainingPath?: string[];
+
+  // Fraction of each intermediate tile's total troops to forward on the next leg.
+  // Set on chained moves so each hop re-applies the same send fraction to the
+  // new tile total rather than forwarding a fixed troop count.
+  sendFraction?: number;
 }
 
 // GameState is the single source of truth for the entire game.

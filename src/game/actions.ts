@@ -55,6 +55,7 @@ export function createLandAction(params: {
   targetTileId: string;
   troopsSent?: number;      // optional: defaults to 50% of source troops
   remainingPath?: string[]; // set by createChainedReinforceAction for multi-hop moves
+  sendFraction?: number;    // fraction to re-apply at each intermediate hop
 }): GameState {
   let nextState = cloneGameState(params.state);
 
@@ -123,6 +124,7 @@ export function createLandAction(params: {
     attackerDefVetLevel: source.defVetLevel,
     defenderFortLevel,
     ...(params.remainingPath ? { remainingPath: params.remainingPath } : {}),
+    ...(params.sendFraction !== undefined ? { sendFraction: params.sendFraction } : {}),
   };
 
   // Troops leave the source tile immediately. Armour is consumed (it travels with the troops).
@@ -418,6 +420,7 @@ export function createChainedReinforceAction(params: {
   playerId: PlayerId;
   path: string[];       // full path from source to destination, inclusive
   troopsSent: number;
+  sendFraction?: number; // fraction to re-apply at each intermediate hop
 }): GameState {
   if (params.path.length < 2) return params.state;
 
@@ -431,6 +434,7 @@ export function createChainedReinforceAction(params: {
     targetTileId,
     troopsSent: params.troopsSent,
     ...(rest.length > 0 ? { remainingPath: rest } : {}),
+    ...(params.sendFraction !== undefined ? { sendFraction: params.sendFraction } : {}),
   });
 }
 
