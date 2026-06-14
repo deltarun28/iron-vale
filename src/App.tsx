@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { clearSavedGame, hasSavedGame, loadSavedGame } from "./game/storage";
-import type { Difficulty, GameState, MapSize, MapTheme, PlayerMode } from "./game/types";
+import type { Difficulty, GameState, MapId, MapTheme, PlayerMode } from "./game/types";
 import { GameScreen } from "./ui/GameScreen";
 import { StartScreen } from "./ui/StartScreen";
 import { UpdatePrompt } from "./ui/UpdatePrompt";
@@ -19,12 +19,13 @@ type Screen = "start" | "game";
 export default function App() {
   const [screen, setScreen] = useState<Screen>("start");
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
+  const [mapId, setMapId] = useState<MapId>("river_crown");
   const [mapTheme, setMapTheme] = useState<MapTheme>("default");
   const [playerMode, setPlayerMode] = useState<PlayerMode>("1v1");
   const [initialState, setInitialState] = useState<GameState | undefined>(undefined);
   const [saveExists, setSaveExists] = useState(() => hasSavedGame());
 
-  function pickMapTheme(_mapSize: MapSize): MapTheme {
+  function pickMapTheme(): MapTheme {
     const roll = Math.random();
     if (roll < 0.70) return "default";
     if (roll < 0.85) return "autumn";
@@ -32,11 +33,12 @@ export default function App() {
   }
 
   /** Clears any existing save and starts a fresh game with the chosen settings. */
-  function handlePlay(chosen: Difficulty, chosenSize: MapSize, chosenMode: PlayerMode): void {
+  function handlePlay(chosen: Difficulty, chosenMapId: MapId, chosenMode: PlayerMode): void {
     clearSavedGame();
     setSaveExists(false);
     setDifficulty(chosen);
-    setMapTheme(pickMapTheme(chosenSize));
+    setMapId(chosenMapId);
+    setMapTheme(pickMapTheme());
     setPlayerMode(chosenMode);
     setInitialState(undefined);
     setScreen("game");
@@ -48,6 +50,7 @@ export default function App() {
     if (!saved || saved.phase !== "playing") return;
     setInitialState(saved);
     setDifficulty(saved.ai.difficulty);
+    setMapId(saved.mapId ?? "river_crown");
     setPlayerMode(saved.playerMode);
     setScreen("game");
   }
@@ -77,6 +80,7 @@ export default function App() {
     <>
       <GameScreen
         difficulty={difficulty}
+        mapId={mapId}
         mapTheme={mapTheme}
         playerMode={playerMode}
         onReturnToMenu={handleReturnToMenu}

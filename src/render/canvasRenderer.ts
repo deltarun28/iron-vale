@@ -21,7 +21,8 @@
 import { asset } from "../assets";
 import { calculateSeaCost, findSeaLaneBetween } from "../game/movement";
 import { PRODUCTION_CAPS } from "../game/constants";
-import { IRON_VALE_TERRITORIES } from "../game/territories";
+import type { TerritoryDefinition } from "../game/territories";
+import { getTerritoryController } from "../game/territories";
 import type { GameState, MapTheme, OwnerId, TerrainType } from "../game/types";
 import {
   axialToPixel,
@@ -44,22 +45,44 @@ const HEX_EDGE_DIRS: readonly { q: number; r: number }[] = [
   { q:  1, r: -1 }, // edge 5 → NE
 ];
 
-// All three map art PNGs loaded once at module initialisation.
-const MAP_IMAGES: Record<MapTheme, HTMLImageElement> = {
-  default: Object.assign(new Image(), { src: asset("map.png") }),
-  winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
-  autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
+// Per-map image config: seasonal PNGs + calibration constants.
+// hexSize: hex radius in PNG pixels (centre-to-corner, vertical).
+// originX/Y: pixel coords of the q=0,r=0 hex centre in the PNG.
+// scaleX: horizontal stretch to correct aspect-ratio differences in the source art.
+interface MapImageConfig {
+  images: Record<MapTheme, HTMLImageElement>;
+  hexSize: number;
+  originX: number;
+  originY: number;
+  scaleX: number;
+}
+
+// Iron Vale (1643×957, q=0 = east_plains which sits right of centre).
+const IRON_VALE_MAP_CONFIG: MapImageConfig = {
+  images: {
+    default: Object.assign(new Image(), { src: asset("map.png") }),
+    winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
+    autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
+  },
+  hexSize: 149,
+  originX: 1038,
+  originY: 448,
+  scaleX:  1.17,
 };
 
-// Calibration: position of the axial-origin hex (q=0, r=0 = east_plains)
-// inside the 1643×957 source PNG, and the PNG's hex radius (centre-to-corner).
-// PNG_SCALE_X lets the image be stretched horizontally independently of vertical
-// scaling to compensate for any aspect-ratio difference in the source art.
-// Adjust these constants if the art is redrawn at a different scale.
-const PNG_HEX_SIZE = 149;   // vertical hex radius in the PNG (centre-to-corner)
-const PNG_ORIGIN_X = 1038;  // x pixel of q=0,r=0 hex centre in the PNG
-const PNG_ORIGIN_Y = 448;   // y pixel of q=0,r=0 hex centre in the PNG
-const PNG_SCALE_X  = 1.17;  // horizontal stretch — PNG hexes are ~85% of expected width
+// Borderlands (600×600, q=0,r=0 = center_plains which is the image centre).
+// These calibration values are initial estimates — tweak if the hex grid drifts.
+const BORDERLANDS_MAP_CONFIG: MapImageConfig = {
+  images: {
+    default: Object.assign(new Image(), { src: asset("borderlands.png") }),
+    winter:  Object.assign(new Image(), { src: asset("borderlands-winter.png") }),
+    autumn:  Object.assign(new Image(), { src: asset("borderlands-autumn.png") }),
+  },
+  hexSize: 107,
+  originX: 714,
+  originY: 600,
+  scaleX:  1.00,
+};
 
 // The options passed in from GameScreen telling the renderer what the player
 // has selected, which tiles are valid drag targets, and where the drag currently is.
@@ -91,6 +114,8 @@ export interface RenderOptions {
   notifications?: FloatingNotification[];
   // Maps territoryId → flash data; drives the pulsing boundary on territory capture.
   territoryFlashes?: Map<string, TerritoryFlash>;
+  // Territory definitions for the current map — used for border and flash rendering.
+  territories?: readonly TerritoryDefinition[];
 }
 
 // Player palette — vivid, saturated tones that punch through the parchment map.
@@ -136,16 +161,21 @@ function clearCanvas(ctx: CanvasRenderingContext2D, width: number, height: numbe
 
 // Draws the map PNG scaled and positioned so its internal hex grid aligns with
 // the canvas hex grid. Falls back to nothing if the image hasn't loaded yet
-// (the solid sea-blue from clearCanvas shows instead).
-function drawMapBackground(ctx: CanvasRenderingContext2D, layout: HexLayout, theme: MapTheme): void {
-  const img = MAP_IMAGES[theme];
+// (the solid background fill shows instead).
+function drawMapBackground(
+  ctx: CanvasRenderingContext2D,
+  layout: HexLayout,
+  theme: MapTheme,
+  mapConfig: MapImageConfig
+): void {
+  const img = mapConfig.images[theme];
   if (!img.complete || img.naturalWidth === 0) return;
-  const scaleY = layout.size / PNG_HEX_SIZE;
-  const scaleX = scaleY * PNG_SCALE_X;
+  const scaleY = layout.size / mapConfig.hexSize;
+  const scaleX = scaleY * mapConfig.scaleX;
   ctx.drawImage(
     img,
-    layout.origin.x - PNG_ORIGIN_X * scaleX,
-    layout.origin.y - PNG_ORIGIN_Y * scaleY,
+    layout.origin.x - mapConfig.originX * scaleX,
+    layout.origin.y - mapConfig.originY * scaleY,
     img.naturalWidth * scaleX,
     img.naturalHeight * scaleY,
   );
@@ -191,21 +221,19 @@ function drawHexTile(params: {
     drawCapacityBar(ctx, polygon.center, layout.size, tile.troops, cap.stopsAt);
   }
 
-  if (tile.fortLevel > 0) drawFortIcon(ctx, polygon.center, layout.size, tile.fortLevel);
-  if (tile.attackVetLevel > 0) drawAttackVetIcon(ctx, polygon.center, layout.size, tile.attackVetLevel);
-  if (tile.defVetLevel > 0)    drawDefVetIcon(ctx, polygon.center, layout.size, tile.defVetLevel);
-
   if (definition.hasBridge) {
     drawBridgeMarker(ctx, polygon.center, layout.size);
   }
 
-  if (definition.isCapital) {
-    drawCapitalMarker(ctx, polygon.center, tile.owner);
-  } else if (definition.isTown) {
+  if (definition.isTown) {
     drawTownMarker(ctx, polygon.center, tile.owner);
   }
 
   drawTroopMarker(ctx, polygon.center, tile.owner, tile.troops, tile.armoured);
+
+  if (tile.fortLevel > 0) drawFortIcon(ctx, polygon.center, layout.size, tile.fortLevel);
+  if (tile.attackVetLevel > 0) drawAttackVetIcon(ctx, polygon.center, layout.size, tile.attackVetLevel);
+  if (tile.defVetLevel > 0)    drawDefVetIcon(ctx, polygon.center, layout.size, tile.defVetLevel);
 
   if (underAttack) {
     drawAttackWarningRing(ctx, polygon.center, state.now);
@@ -324,8 +352,8 @@ function drawAttackVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: n
   if (level <= 0) return;
   ctx.save();
 
-  const w = size * 0.22;
-  const h = size * 0.08;
+  const w = size * 0.352;
+  const h = size * 0.128;
   const cx = center.x - size * 0.36;
   const baseY = center.y + size * 0.52;
 
@@ -334,7 +362,7 @@ function drawAttackVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: n
   ctx.lineWidth = 0.8;
 
   for (let i = 0; i < level; i++) {
-    const cy = baseY - i * (h + 2);
+    const cy = baseY - i * (h + h * 0.25);
     // V-shaped chevron
     ctx.beginPath();
     ctx.moveTo(cx - w / 2, cy - h / 2);
@@ -356,8 +384,8 @@ function drawDefVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: numb
   if (level <= 0) return;
   ctx.save();
 
-  const w = size * 0.18;
-  const h = size * 0.06;
+  const w = size * 0.288;
+  const h = size * 0.096;
   const cx = center.x + size * 0.36;
   const baseY = center.y + size * 0.52;
 
@@ -366,7 +394,7 @@ function drawDefVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: numb
   ctx.lineWidth = 0.8;
 
   for (let i = 0; i < level; i++) {
-    const cy = baseY - i * (h + 2);
+    const cy = baseY - i * (h + h * 0.25);
     ctx.beginPath();
     ctx.roundRect(cx - w / 2, cy - h / 2, w, h, 1);
     ctx.fill();
@@ -401,27 +429,6 @@ function drawBridgeMarker(ctx: CanvasRenderingContext2D, center: Point, size: nu
 }
 
 /** Draws a filled circle labelled "C" in the owner's colour above the troop marker. */
-function drawCapitalMarker(ctx: CanvasRenderingContext2D, center: Point, owner: OwnerId): void {
-  ctx.save();
-
-  ctx.fillStyle = getOwnerFill(owner);
-  ctx.strokeStyle = "#3a2c1a";
-  ctx.lineWidth = 2;
-
-  ctx.beginPath();
-  ctx.arc(center.x, center.y - 18, 14, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 16px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("C", center.x, center.y - 18);
-
-  ctx.restore();
-}
-
 /** Draws a filled circle labelled "T" in the owner's colour above the troop marker. */
 function drawTownMarker(ctx: CanvasRenderingContext2D, center: Point, owner: OwnerId): void {
   ctx.save();
@@ -1100,7 +1107,8 @@ function buildTerritoryBoundaryPath(
 function drawTerritoryBorders(
   ctx: CanvasRenderingContext2D,
   state: GameState,
-  layout: HexLayout
+  layout: HexLayout,
+  territories: readonly TerritoryDefinition[]
 ): void {
   const coordToTileId = buildCoordToTileId(state);
 
@@ -1110,14 +1118,19 @@ function drawTerritoryBorders(
   ctx.lineCap = "round";
   ctx.setLineDash([layout.size * 0.12, layout.size * 0.10]);
 
-  for (const territory of IRON_VALE_TERRITORIES) {
-    // Colour hints at the territory terrain without being distracting.
-    const firstDef = state.tileDefinitions[territory.tileIds[0]!];
-    const terrain = firstDef?.terrain ?? "plains";
-    ctx.strokeStyle =
-      terrain === "mountain" ? "#a09080" :
-      terrain === "forest"   ? "#5a8050" :
-                               "#b09060";
+  for (const territory of territories) {
+    const controller = getTerritoryController(territory, state.tiles);
+    if (controller) {
+      ctx.strokeStyle = getOwnerStroke(controller);
+    } else {
+      // Uncontrolled: colour hints at terrain.
+      const firstDef = state.tileDefinitions[territory.tileIds[0]!];
+      const terrain = firstDef?.terrain ?? "plains";
+      ctx.strokeStyle =
+        terrain === "mountain" ? "#a09080" :
+        terrain === "forest"   ? "#5a8050" :
+                                 "#b09060";
+    }
 
     buildTerritoryBoundaryPath(ctx, territory.tileIds, state, layout, coordToTileId);
     ctx.stroke();
@@ -1177,10 +1190,13 @@ export function renderGame(
 ): void {
   const canvas = ctx.canvas;
 
+  const mapConfig = state.mapId === "borderlands" ? BORDERLANDS_MAP_CONFIG : IRON_VALE_MAP_CONFIG;
+  const territories = options.territories ?? [];
+
   clearCanvas(ctx, canvas.width, canvas.height);
-  drawMapBackground(ctx, layout, options.mapTheme ?? "default");
+  drawMapBackground(ctx, layout, options.mapTheme ?? "default", mapConfig);
   drawSeaLanes(ctx, state, layout);
-  drawTerritoryBorders(ctx, state, layout);
+  drawTerritoryBorders(ctx, state, layout, territories);
 
   // Tiles with an in-flight attack headed toward them show a subtle warning ring.
   const underAttackIds = new Set(

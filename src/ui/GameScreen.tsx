@@ -24,8 +24,8 @@ import { findSeaLaneBetween } from "../game/movement";
 import { areAllies, createInitialGameState, getTeamId } from "../game/state";
 import { saveGame } from "../game/storage";
 import { updateGame } from "../game/simulation";
-import { IRON_VALE_TERRITORIES, getTerritoryController } from "../game/territories";
-import type { Difficulty, GameState, MapTheme, PlayerMode } from "../game/types";
+import { getTerritoriesForMap, getTerritoryController } from "../game/territories";
+import type { Difficulty, GameState, MapId, MapTheme, PlayerMode } from "../game/types";
 import { renderGame } from "../render/canvasRenderer";
 import type { FloatingNotification, TerritoryFlash } from "../render/canvasRenderer";
 import {
@@ -117,23 +117,29 @@ function computeZoomUpdate(params: {
   currentPan: Point;
   canvasWidth: number;
   canvasHeight: number;
+  // Map-specific origin offsets as multiples of tileSize.
+  originXMul: number;
+  originYMul: number;
+  // Map-specific fitted-size divisors.
+  fitDivX: number;
+  fitDivY: number;
 }): { zoom: number; pan: Point } {
   const dpr = window.devicePixelRatio;
-  const fittedSize = Math.min(params.canvasWidth / 13, params.canvasHeight / 6);
+  const fittedSize = Math.min(params.canvasWidth / params.fitDivX, params.canvasHeight / params.fitDivY);
   const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, params.newZoom));
   const oldSize = Math.max(60, fittedSize * params.currentZoom);
   const newSize = Math.max(60, fittedSize * clampedZoom);
   const focusBuf = { x: params.focusCss.x * dpr, y: params.focusCss.y * dpr };
   const oldOrigin = {
-    x: params.canvasWidth / 2 + oldSize * 1.73 + params.currentPan.x,
-    y: params.canvasHeight / 2 - oldSize * 0.2 + params.currentPan.y,
+    x: params.canvasWidth  / 2 + oldSize * params.originXMul + params.currentPan.x,
+    y: params.canvasHeight / 2 + oldSize * params.originYMul + params.currentPan.y,
   };
   // Tile-space coordinate of the focus point before zooming.
   const tx = (focusBuf.x - oldOrigin.x) / oldSize;
   const ty = (focusBuf.y - oldOrigin.y) / oldSize;
   const newBaseOrigin = {
-    x: params.canvasWidth / 2 + newSize * 1.73,
-    y: params.canvasHeight / 2 - newSize * 0.2,
+    x: params.canvasWidth  / 2 + newSize * params.originXMul,
+    y: params.canvasHeight / 2 + newSize * params.originYMul,
   };
   const pan = clampPan(
     {
@@ -187,19 +193,20 @@ function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement): boolean {
 
 interface GameScreenProps {
   difficulty: Difficulty;
+  mapId: MapId;
   mapTheme: MapTheme;
   playerMode: PlayerMode;
   initialState?: GameState;
   onReturnToMenu: () => void;
 }
 
-export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onReturnToMenu }: GameScreenProps) {
+export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialState, onReturnToMenu }: GameScreenProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const layoutRef = useRef<HexLayout | null>(null);
 
   // useState triggers a React re-render when it changes.
   const [state, setState] = useState<GameState>(
-    () => initialState ?? createInitialGameState(difficulty, playerMode)
+    () => initialState ?? createInitialGameState(difficulty, playerMode, mapId)
   );
 
   // isPaused is React state (triggers HUD re-render) mirrored in a ref (readable
@@ -320,8 +327,8 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
     setZoom(1.0);
     setSpeed(1);
     setPreviewSecondsLeft(null);
-    // Preserve the current difficulty AND mode so "play again" keeps both.
-    setState(createInitialGameState(state.ai.difficulty, state.playerMode));
+    // Preserve the current difficulty, mode, and map so "play again" keeps them.
+    setState(createInitialGameState(state.ai.difficulty, state.playerMode, state.mapId));
   }
 
   function handlePause(): void {
@@ -652,16 +659,21 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
 
     resizeCanvasToDisplaySize(canvas);
 
-    // Compute layout inline so zoom can scale the tile size directly.
-    // 60 buffer pixels is the minimum tile radius to keep hexes tappable.
-    // Divisor 11 and x-offset 1.73 are tuned to fit the 17-tile map (q -4..+2).
-    const fittedSize = Math.min(canvas.width / 13, canvas.height / 6);
+    // Layout computation is map-specific.
+    // Iron Vale: q spans -4..+2, r spans -1..+1 (wide and short).
+    // Borderlands: q spans -3..+2, r spans -3..+3 (7-row diamond, shifted left of centre).
+    const isSmallMap = state.mapId !== "borderlands";
+    const fittedSize = isSmallMap
+      ? Math.min(canvas.width / 13, canvas.height / 6)
+      : Math.min(canvas.width / 11, canvas.height / 11);
     const tileSize = Math.max(60, fittedSize * zoomRef.current);
     const baseLayout: HexLayout = {
       size: tileSize,
       origin: {
-        x: canvas.width / 2 + tileSize * 1.73,
-        y: canvas.height / 2 - tileSize * 0.2,
+        // Iron Vale needs a rightward/upward nudge to centre on its asymmetric grid.
+        // Borderlands: pixel centre of the tile extent is 0.866*size right of q=0,r=0.
+        x: canvas.width  / 2 + (isSmallMap ? tileSize * 1.73 : tileSize * 0.87),
+        y: canvas.height / 2 + (isSmallMap ? -tileSize * 0.2 : 0),
       },
     };
 
@@ -695,7 +707,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       );
 
       // Detect territory captures: when a new player gains full control of a territory.
-      for (const territory of IRON_VALE_TERRITORIES) {
+      for (const territory of getTerritoriesForMap(state.mapId)) {
         const prevController = getTerritoryController(territory, prev.tiles);
         const nextController = getTerritoryController(territory, state.tiles);
         if (nextController !== null && nextController !== prevController) {
@@ -735,6 +747,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       captureFlashes: captureFlashesRef.current,
       territoryFlashes: territoryFlashesRef.current,
       notifications: notificationsRef.current,
+      territories: getTerritoriesForMap(state.mapId),
     });
   }, [state, dragSource, validTargetIds, optionsTileId, sendFraction, panOffset, zoom]);
 
@@ -921,6 +934,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         const newDist = getTouchDistance(event.touches);
         const newMid = getTouchMidpoint(event.touches, canvas);
         const ratio = newDist / Math.max(1, pinchRef.current.dist);
+        const isSmall = stateRef.current.mapId !== "borderlands";
         const result = computeZoomUpdate({
           newZoom: zoomRef.current * ratio,
           focusCss: newMid,
@@ -928,6 +942,10 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
           currentPan: panOffsetRef.current,
           canvasWidth: canvas.width,
           canvasHeight: canvas.height,
+          originXMul: isSmall ? 1.73 : 0.87,
+          originYMul: isSmall ? -0.2 : 0,
+          fitDivX: isSmall ? 13 : 11,
+          fitDivY: isSmall ? 6  : 11,
         });
         pinchRef.current = { dist: newDist, midCss: newMid };
         zoomRef.current = result.zoom;
@@ -964,6 +982,7 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
       if (event.deltaMode === 2) pixelDelta *= 600;
 
       const factor = Math.pow(0.999, pixelDelta);
+      const isSmall2 = stateRef.current.mapId !== "borderlands";
       const result = computeZoomUpdate({
         newZoom: zoomRef.current * factor,
         focusCss: cssPoint,
@@ -971,6 +990,10 @@ export function GameScreen({ difficulty, mapTheme, playerMode, initialState, onR
         currentPan: panOffsetRef.current,
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
+        originXMul: isSmall2 ? 1.73 : 0.87,
+        originYMul: isSmall2 ? -0.2 : 0,
+        fitDivX: isSmall2 ? 13 : 11,
+        fitDivY: isSmall2 ? 6  : 11,
       });
       zoomRef.current = result.zoom;
       panOffsetRef.current = result.pan;

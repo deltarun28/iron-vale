@@ -1,7 +1,7 @@
 /**
  * StartScreen.tsx — The main menu shown before a game starts.
  *
- * Lets the player choose map size, player count, and difficulty, then
+ * Lets the player choose a map, player count, and difficulty, then
  * launches a new game via onPlay. If a valid save exists in localStorage,
  * a Continue button is shown that calls onContinue instead.
  *
@@ -9,20 +9,20 @@
  */
 
 import { useEffect, useState } from "react";
-import type { Difficulty, MapSize, PlayerMode } from "../game/types";
+import type { Difficulty, MapId, PlayerMode } from "../game/types";
 import { startMenuMusic, stopMenuMusic } from "../game/audio";
 import { asset } from "../assets";
 import { HowToPlay } from "./HowToPlay";
 
 interface StartScreenProps {
   hasSave: boolean;
-  onPlay: (difficulty: Difficulty, mapSize: MapSize, playerMode: PlayerMode) => void;
+  onPlay: (difficulty: Difficulty, mapId: MapId, playerMode: PlayerMode) => void;
   onContinue: () => void;
 }
 
 export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
-  const [mapSize, setMapSize] = useState<MapSize>("small");
+  const [mapId, setMapId] = useState<MapId>("river_crown");
   const [playerMode, setPlayerMode] = useState<PlayerMode>("1v1");
   const [showHelp, setShowHelp] = useState(false);
 
@@ -55,24 +55,17 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
           <div className="start-screen__options">
             <button
               type="button"
-              className={`start-screen__option${mapSize === "small" ? " start-screen__option--active" : ""}`}
-              onClick={() => setMapSize("small")}
+              className={`start-screen__option${mapId === "river_crown" ? " start-screen__option--active" : ""}`}
+              onClick={() => setMapId("river_crown")}
             >
-              Small
+              River Crown
             </button>
             <button
               type="button"
-              className="start-screen__option start-screen__option--soon"
-              disabled
+              className={`start-screen__option${mapId === "borderlands" ? " start-screen__option--active" : ""}`}
+              onClick={() => setMapId("borderlands")}
             >
-              Medium
-            </button>
-            <button
-              type="button"
-              className="start-screen__option start-screen__option--soon"
-              disabled
-            >
-              Large
+              Borderlands
             </button>
           </div>
         </div>
@@ -141,7 +134,7 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
         <button
           type="button"
           className="start-screen__play"
-          onClick={() => onPlay(difficulty, mapSize, playerMode)}
+          onClick={() => onPlay(difficulty, mapId, playerMode)}
         >
           Play
         </button>

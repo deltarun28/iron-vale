@@ -23,7 +23,8 @@ export type TerrainType = "plains" | "forest" | "mountain";
 
 export type Difficulty = "easy" | "normal" | "hard";
 
-export type MapSize = "small" | "medium" | "large";
+/** Named map identifier — what the player picks on the start screen. */
+export type MapId = "river_crown" | "borderlands";
 
 /** Which map art is used for the match. All three share the same Iron Vale hex layout. */
 export type MapTheme = "default" | "winter" | "autumn";
@@ -183,6 +184,9 @@ export interface GameState {
   // The mode this match was created in. Stored so save/load and the UI can
   // recover team layout without recomputing it.
   playerMode: PlayerMode;
+
+  // Which map was used to create this match.
+  mapId: MapId;
 
   // Elapsed game time in seconds, incremented each tick by deltaSeconds.
   now: number;

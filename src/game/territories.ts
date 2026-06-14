@@ -13,7 +13,7 @@
  */
 
 import { isPlayer } from "./state";
-import type { PlayerId, TileState } from "./types";
+import type { MapId, PlayerId, TileState } from "./types";
 
 export interface TerritoryDefinition {
   id: string;
@@ -54,6 +54,60 @@ export const IRON_VALE_TERRITORIES: readonly TerritoryDefinition[] = [
     bonusPerTile: 0.1,
   },
 ] as const;
+
+export const BORDERLANDS_TERRITORIES: readonly TerritoryDefinition[] = [
+  {
+    id: "bl_northern",
+    name: "Northern Highlands",
+    tileIds: [
+      "bl_north_forest_w", "bl_cap_north", "bl_north_forest_e",
+      "bl_nw_forest", "bl_north_pass_w", "bl_north_pass_e", "bl_ne_forest",
+    ],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "bl_southern",
+    name: "Southern Highlands",
+    tileIds: [
+      "bl_sw_forest", "bl_south_pass_w", "bl_south_pass_e", "bl_se_forest",
+      "bl_south_forest_w", "bl_cap_south", "bl_south_forest_e",
+    ],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "bl_western",
+    name: "Western Vale",
+    tileIds: [
+      "bl_west_pass_n", "bl_north_vale_w",
+      "bl_cap_west", "bl_west_forest",
+      "bl_west_pass_s", "bl_south_vale_w",
+    ],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "bl_eastern",
+    name: "Eastern Vale",
+    tileIds: [
+      "bl_north_vale_e", "bl_east_pass_n",
+      "bl_east_forest", "bl_cap_east",
+      "bl_south_vale_e", "bl_east_pass_s",
+    ],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "bl_central_valley",
+    name: "Central Valley",
+    tileIds: [
+      "bl_north_forest_c", "bl_center_vale_w", "bl_center_vale_e", "bl_center_forest",
+    ],
+    bonusPerTile: 0.1,
+  },
+] as const;
+
+/** Returns the territory list for the given map. */
+export function getTerritoriesForMap(mapId: MapId): readonly TerritoryDefinition[] {
+  return mapId === "borderlands" ? BORDERLANDS_TERRITORIES : IRON_VALE_TERRITORIES;
+}
 
 /** Returns the player controlling all tiles, or null if split/neutral. */
 export function getTerritoryController(

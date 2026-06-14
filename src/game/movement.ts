@@ -301,17 +301,6 @@ export function validateLandAction(params: {
     return { valid: false, reason: "Cannot target a teammate's tile." };
   }
 
-  // Only block reinforcing your own tile while it's already receiving troops.
-  // Attacks on enemy or neutral tiles are always allowed regardless of busy state —
-  // a tile in the middle of a troop movement can still be attacked.
-  if (
-    target.owner === params.playerId &&
-    target.busyUntil !== null &&
-    target.busyUntil > params.state.now
-  ) {
-    return { valid: false, reason: "Target tile is busy." };
-  }
-
   return { valid: true };
 }
 

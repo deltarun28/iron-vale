@@ -18,6 +18,11 @@ import {
   STARTING_POSITIONS,
 } from "./constants";
 import {
+  BORDERLANDS_STARTING_TILES,
+  borderlandsSeaLanes,
+  getBorderlandsTileDefinitions,
+} from "./borderlandsMap";
+import {
   IRON_VALE_STARTING_TILES,
   getIronValeTileDefinitions,
   ironValeSeaLanes,
@@ -26,6 +31,7 @@ import {
 import type {
   Difficulty,
   GameState,
+  MapId,
   OwnerId,
   PlayerId,
   PlayerMode,
@@ -204,14 +210,22 @@ function assignStartingTiles(
 }
 
 // Builds the starting GameState for a given mode. Each active player draws a
-// starting tile from IRON_VALE_STARTING_TILES (weighted random without
+// starting tile from the map's starting tile pool (weighted random without
 // replacement); that tile is promoted to a capital for the match so every
 // player begins with one capital regardless of which town they drew.
 export function createInitialGameState(
   difficulty: Difficulty = "normal",
-  playerMode: PlayerMode = "1v1"
+  playerMode: PlayerMode = "1v1",
+  mapId: MapId = "river_crown"
 ): GameState {
-  const tileDefinitions = getIronValeTileDefinitions();
+  const isSmall = mapId !== "borderlands";
+  const tileDefinitions = isSmall
+    ? getIronValeTileDefinitions()
+    : getBorderlandsTileDefinitions();
+  const seaLanes = isSmall ? ironValeSeaLanes : borderlandsSeaLanes;
+  const startingTilePool: readonly StartingTileSpec[] = isSmall
+    ? IRON_VALE_STARTING_TILES
+    : BORDERLANDS_STARTING_TILES;
 
   const tiles: Record<string, TileState> = Object.fromEntries(
     Object.values(tileDefinitions).map((definition) => [
@@ -242,10 +256,7 @@ export function createInitialGameState(
     [drawOrder[i], drawOrder[j]] = [drawOrder[j]!, drawOrder[i]!];
   }
 
-  const startingTiles = assignStartingTiles(
-    IRON_VALE_STARTING_TILES,
-    drawOrder
-  );
+  const startingTiles = assignStartingTiles(startingTilePool, drawOrder);
   for (const [playerId, tileId] of startingTiles) {
     const baseDef = tileDefinitions[tileId];
     const baseTile = tiles[tileId];
@@ -272,6 +283,16 @@ export function createInitialGameState(
     }
   }
 
+  // Hard mode (Borderlands): neutral tiles start with 1 extra troop.
+  // Mountains: 3, towns: 6, plains/forests: 4.
+  if (difficulty === "hard" && mapId === "borderlands") {
+    for (const tile of Object.values(tiles)) {
+      if (tile.owner === "neutral") {
+        tile.troops += 1;
+      }
+    }
+  }
+
   const players: Partial<Record<PlayerId, PlayerState>> = {};
   for (const playerId of activePlayerIds) {
     const teamId = teamLayout[playerId];
@@ -284,10 +305,11 @@ export function createInitialGameState(
     phase: "preview",
     winningTeam: null,
     playerMode,
+    mapId,
     now: 0,
     tiles,
     tileDefinitions,
-    seaLanes: ironValeSeaLanes,
+    seaLanes,
     players,
     activeActions: [],
     ai: {

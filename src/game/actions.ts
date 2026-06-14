@@ -137,7 +137,9 @@ export function createLandAction(params: {
   // target unlocked so the defender can still dispatch troops from a tile
   // that is under assault — locking it was silently blocking counterplay.
   if (!isAttack) {
-    target.busyUntil = resolvesAt;
+    // Extend (don't overwrite) the target busy lock so an in-flight combat
+    // lock isn't cleared by a reinforcement queuing to the same tile.
+    target.busyUntil = Math.max(target.busyUntil ?? 0, resolvesAt);
   }
 
   // ── Head-on collision check ────────────────────────────────────────────────
