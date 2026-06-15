@@ -10,9 +10,10 @@
  */
 
 import { useState } from "react";
-import { GOLD_PRODUCTION_PER_SECOND } from "../game/constants";
+import { GOLD_PRODUCTION_PER_SECOND, TROOP_PRODUCTION_PER_SECOND } from "../game/constants";
 import { isMuted, toggleMute } from "../game/audio";
 import { areAllies, getActivePlayerIds } from "../game/state";
+import { getTerritoriesForMap, getTerritoryBonus, getTerritoryController } from "../game/territories";
 import type { GameState, PlayerId } from "../game/types";
 
 function getTotalTiles(state: GameState): number {
@@ -65,6 +66,31 @@ function getGoldRate(state: GameState, playerId: PlayerId): number {
       if (def.isTown) return sum + GOLD_PRODUCTION_PER_SECOND.town;
       return sum;
     }, 0);
+}
+
+/** Total troop production rate per second across all owned tiles, including territory bonuses. */
+function getTroopRate(state: GameState, playerId: PlayerId): number {
+  const ownedTiles = Object.values(state.tiles).filter((t) => t.owner === playerId);
+
+  let rate = 0;
+  for (const tile of ownedTiles) {
+    const def = state.tileDefinitions[tile.id];
+    if (!def) continue;
+    rate += def.isCapital
+      ? TROOP_PRODUCTION_PER_SECOND.capital
+      : TROOP_PRODUCTION_PER_SECOND[def.terrain];
+  }
+
+  // Territory bonus applies per owned tile for each controlled territory.
+  let bonusPerTile = 0;
+  for (const territory of getTerritoriesForMap(state.mapId)) {
+    if (getTerritoryController(territory, state.tiles) === playerId) {
+      bonusPerTile += getTerritoryBonus(territory);
+    }
+  }
+  rate += bonusPerTile * ownedTiles.length;
+
+  return rate;
 }
 
 /** Aggregate tile count and troop total for all neutral-owned tiles. */
@@ -161,7 +187,7 @@ export function Hud({
           if (!player) return null;
           const tiles = getTileCount(state, pid);
           const troops = getTotalTroops(state, pid);
-          const goldRate = getGoldRate(state, pid);
+          const troopRate = getTroopRate(state, pid);
           const label = getPanelLabel(state, playerId, pid);
           const teamModeShowChip = state.playerMode === "2v2";
           return (
@@ -178,7 +204,7 @@ export function Hud({
                 Gold {formatGold(player.gold)} / {player.goldCap}
               </div>
               <div className="hud__sub">
-                +{goldRate.toFixed(1)}/s · {tiles} tiles
+                +{troopRate.toFixed(1)} t/s · {tiles} tiles
               </div>
               <div className="hud__sub">Troops {troops}</div>
             </div>
