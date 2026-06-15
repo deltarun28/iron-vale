@@ -515,10 +515,14 @@ function drawTroopMarker(
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = "#ffffff";
   ctx.font = "bold 26px sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+  ctx.strokeStyle = "#000000";
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  ctx.strokeText(String(Math.floor(troops)), cx, cy);
+  ctx.fillStyle = "#ffffff";
   ctx.fillText(String(Math.floor(troops)), cx, cy);
 
   ctx.restore();
@@ -827,10 +831,14 @@ function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layo
     ctx.stroke();
 
     // Troop count inside the marker
-    ctx.fillStyle = "#ffffff";
     ctx.font = "bold 13px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.strokeText(String(Math.floor(action.troopsSent)), dotPos.x, dotPos.y);
+    ctx.fillStyle = "#ffffff";
     ctx.fillText(String(Math.floor(action.troopsSent)), dotPos.x, dotPos.y);
   }
 
