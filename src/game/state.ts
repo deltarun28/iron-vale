@@ -429,7 +429,10 @@ export function checkWinCondition(state: GameState): GameState {
     const ownsAnyTile = Object.values(nextState.tiles).some(
       (tile) => tile.owner === playerId
     );
-    if (ownsAnyTile) teamsAlive.add(player.teamId);
+    const hasTroopsInFlight = nextState.activeActions.some(
+      (action) => action.owner === playerId
+    );
+    if (ownsAnyTile || hasTroopsInFlight) teamsAlive.add(player.teamId);
   }
 
   if (teamsAlive.size <= 1) {
