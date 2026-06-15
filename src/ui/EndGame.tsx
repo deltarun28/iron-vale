@@ -36,7 +36,7 @@ export function EndGame({
   // Record this game and snapshot the updated career stats on first render.
   // useState lazy init runs once on mount so the result is recorded exactly once.
   const [{ career, isNewBest }] = useState(() => {
-    const newBest = recordGameResult(won, state.now);
+    const newBest = recordGameResult(won, state.now, state.mapId, state.ai.difficulty, state.playerMode);
     return { career: loadStats(), isNewBest: newBest };
   });
 

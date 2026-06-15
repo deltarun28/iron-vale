@@ -806,6 +806,13 @@ button {
   cursor: pointer;
 }
 
+.start-screen__footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: -10px;
+}
+
 .start-screen__help {
   border: 0;
   background: transparent;
@@ -814,7 +821,6 @@ button {
   font-weight: 700;
   cursor: pointer;
   padding: 4px 8px;
-  margin-top: -10px;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -906,6 +912,120 @@ button {
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+/* ── Stats screen content ────────────────────────────────────── */
+
+.stats-screen__empty {
+  font-size: 15px;
+  color: rgba(36, 27, 18, 0.55);
+  text-align: center;
+  padding: 24px 0;
+}
+
+.stats-screen__form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.stats-screen__dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.stats-screen__dot--win  { background: #3A6EA5; }
+.stats-screen__dot--loss { background: #A23B3B; }
+.stats-screen__dot--empty { background: rgba(70, 50, 30, 0.12); }
+
+.stats-screen__form-label {
+  font-size: 13px;
+  color: rgba(36, 27, 18, 0.65);
+  margin: 0;
+}
+
+.stats-screen__table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.stats-screen__table-row {
+  display: grid;
+  grid-template-columns: 1fr repeat(3, 60px);
+  align-items: center;
+  gap: 4px;
+}
+
+.stats-screen__table-row--header {
+  margin-bottom: 2px;
+}
+
+.stats-screen__th {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(36, 27, 18, 0.45);
+  text-align: center;
+}
+
+.stats-screen__map-label {
+  font-weight: 700;
+  color: #241b12;
+  font-size: 13px;
+}
+
+.stats-screen__td {
+  text-align: center;
+  color: rgba(36, 27, 18, 0.35);
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-screen__td--set {
+  color: #241b12;
+  font-weight: 700;
+}
+
+.stats-screen__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stats-screen__summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 14px;
+  border-bottom: 1px solid rgba(70, 50, 30, 0.08);
+  padding-bottom: 6px;
+}
+
+.stats-screen__summary-label {
+  color: rgba(36, 27, 18, 0.6);
+  font-weight: 600;
+}
+
+.stats-screen__summary-val {
+  font-weight: 800;
+  color: #241b12;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-screen__summary-val--best {
+  color: #7a4e00;
+}
+
+.stats-screen__summary-sub {
+  font-weight: 600;
+  color: rgba(36, 27, 18, 0.5);
+  font-size: 12px;
 }
 
 /* ── Pre-game preview overlay ────────────────────────────────── */

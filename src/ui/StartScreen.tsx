@@ -13,6 +13,7 @@ import type { Difficulty, MapId, PlayerMode } from "../game/types";
 import { startMenuMusic, stopMenuMusic } from "../game/audio";
 import { asset } from "../assets";
 import { HowToPlay } from "./HowToPlay";
+import { StatsScreen } from "./StatsScreen";
 
 interface StartScreenProps {
   hasSave: boolean;
@@ -25,6 +26,7 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
   const [mapId, setMapId] = useState<MapId>("river_crown");
   const [playerMode, setPlayerMode] = useState<PlayerMode>("1v1");
   const [showHelp, setShowHelp] = useState(false);
+  const [showStats, setShowStats] = useState(false);
 
   useEffect(() => {
     startMenuMusic();
@@ -37,6 +39,7 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
       style={{ backgroundImage: `url(${asset("menu-bg.png")})` }}
     >
       {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
+      {showStats && <StatsScreen onClose={() => setShowStats(false)} />}
       <img src={asset("logo.png")} alt="Iron Vale" className="start-screen__banner" />
       <div className="start-screen__card">
 
@@ -139,13 +142,22 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
           Play
         </button>
 
-        <button
-          type="button"
-          className="start-screen__help"
-          onClick={() => setShowHelp(true)}
-        >
-          How to play
-        </button>
+        <div className="start-screen__footer-links">
+          <button
+            type="button"
+            className="start-screen__help"
+            onClick={() => setShowHelp(true)}
+          >
+            How to play
+          </button>
+          <button
+            type="button"
+            className="start-screen__help"
+            onClick={() => setShowStats(true)}
+          >
+            Stats
+          </button>
+        </div>
       </div>
     </div>
   );

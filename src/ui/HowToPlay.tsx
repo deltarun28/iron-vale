@@ -53,6 +53,17 @@ export function HowToPlay({ onClose }: HowToPlayProps) {
           </section>
 
           <section className="how-to-play__section">
+            <h3>Territories</h3>
+            <p>
+              The map is divided into named territories — groups of tiles with a shared
+              border outline. Controlling every tile in a territory earns a troops-per-second
+              bonus applied to every tile you own. Bigger territories give bigger bonuses.
+              Your current troop production rate (including territory bonuses) is shown in
+              the top stat bar.
+            </p>
+          </section>
+
+          <section className="how-to-play__section">
             <h3>Combat</h3>
             <p>
               Attacking troops fight defenders until one side runs out. Mountains and forests
@@ -138,8 +149,7 @@ export function HowToPlay({ onClose }: HowToPlayProps) {
             <h3>Button Reference</h3>
             <ul>
               <li><strong>¼ ½ ¾ All</strong> — fraction of troops sent each time you drag. All sends the full garrison.</li>
-              <li><strong>½×</strong> — slow the game to half speed. Tap again to return to normal.</li>
-              <li><strong>2×</strong> — double game speed. Tap again to return to normal.</li>
+              <li><strong>½× / 1× / 1½× / 2×</strong> — tap to cycle game speed: half, normal, one-and-a-half, or double. Highlighted when not at normal speed.</li>
               <li><strong>Pause</strong> — freeze the game. From the pause menu you can restart or return to the main menu.</li>
               <li><strong>Sound / Muted</strong> — toggle audio on or off.</li>
               <li><strong>Fortify (tap a tile → 5g)</strong> — add one fortification level. Up to five levels, each adding defence and slowing attackers.</li>
