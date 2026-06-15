@@ -358,8 +358,8 @@ function drawAttackVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: n
   const baseY = center.y + size * 0.52;
 
   ctx.fillStyle = "rgba(220, 140, 20, 0.95)";
-  ctx.strokeStyle = "rgba(100, 60, 0, 0.8)";
-  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
+  ctx.lineWidth = 1.5;
 
   for (let i = 0; i < level; i++) {
     const cy = baseY - i * (h + h * 0.25);
@@ -390,8 +390,8 @@ function drawDefVetIcon(ctx: CanvasRenderingContext2D, center: Point, size: numb
   const baseY = center.y + size * 0.52;
 
   ctx.fillStyle = "rgba(80, 160, 100, 0.95)";
-  ctx.strokeStyle = "rgba(20, 70, 40, 0.8)";
-  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
+  ctx.lineWidth = 1.5;
 
   for (let i = 0; i < level; i++) {
     const cy = baseY - i * (h + h * 0.25);
@@ -1121,8 +1121,8 @@ function drawTerritoryBorders(
   const coordToTileId = buildCoordToTileId(state);
 
   ctx.save();
-  ctx.globalAlpha = 0.45;
-  ctx.lineWidth = Math.max(2, layout.size * 0.055);
+  ctx.globalAlpha = 0.70;
+  ctx.lineWidth = Math.max(2.5, layout.size * 0.07);
   ctx.lineCap = "round";
   ctx.setLineDash([layout.size * 0.12, layout.size * 0.10]);
 
