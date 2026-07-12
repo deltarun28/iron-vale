@@ -853,10 +853,22 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       // the losing side's colour, offset left/right so both fit on one tile.
       for (const event of state.combatEvents) {
         if (event.time <= lastCombatTimeRef.current) continue;
+        // Field battles carry a mid-path anchor; tile combats omit it.
+        const midpoint =
+          event.fromTileId !== undefined && event.pathFraction !== undefined
+            ? {
+                anchorFromTileId: event.fromTileId,
+                anchorFraction: event.pathFraction,
+                ...(event.atSea ? { anchorAtSea: true } : {}),
+              }
+            : {};
         clashesRef.current.set(`${event.targetTileId}:${event.time}`, {
           tileId: event.targetTileId,
           time: event.time,
           attackerWon: event.attackerWon,
+          ...(event.fromTileId !== undefined ? { fromTileId: event.fromTileId } : {}),
+          ...(event.pathFraction !== undefined ? { pathFraction: event.pathFraction } : {}),
+          ...(event.atSea ? { atSea: true } : {}),
         });
         const attackerLosses = Math.floor(event.attackerLosses);
         const defenderLosses = Math.floor(event.defenderLosses);
@@ -868,6 +880,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
             createdAt: state.now,
             color: getOwnerStroke(event.attackerOwner),
             offsetX: -0.45,
+            ...midpoint,
           });
         }
         if (defenderLosses >= 1) {
@@ -878,6 +891,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
             createdAt: state.now,
             color: getOwnerStroke(event.defenderOwner),
             offsetX: 0.45,
+            ...midpoint,
           });
         }
       }

@@ -10,7 +10,7 @@
  * automatically routes to sea if a lane exists, otherwise falls back to land.
  */
 
-import { calculateCombatResolutionTime, calculateVeteranAttackMultiplier, resolveCombat } from "./combat";
+import { calculateCombatResolutionTime } from "./combat";
 import { ARMOUR, FORT, incrementFortLevel } from "./constants";
 import { spendGold } from "./economy";
 import {
@@ -35,8 +35,19 @@ import type {
 
 // Generates a unique ID for each action. Using Date.now() plus a random hex
 // string makes collisions practically impossible without needing a counter.
-function createActionId(): string {
+// Exported for the simulation, which creates continuation and return-home
+// actions directly (their troops are already in flight — no tile deduction).
+export function createActionId(): string {
   return `action_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+// Rendered progress fraction of an in-flight action at time t: where along the
+// source→target path the marker is drawn, accounting for mid-path starts.
+function getRenderedProgressAt(action: ActiveAction, t: number): number {
+  const duration = action.resolvesAt - action.startedAt;
+  const raw = duration > 0 ? (t - action.startedAt) / duration : 1;
+  const start = action.pathStartFraction ?? 0;
+  return start + (1 - start) * raw;
 }
 
 // By default, the player sends half their available troops. This is the
@@ -146,93 +157,47 @@ export function createLandAction(params: {
 
   // ── Head-on collision check ────────────────────────────────────────────────
   // If there is already a land_attack heading in exactly the opposite direction
-  // (from our target back to our source), the two armies meet in the open field.
-  // Resolve combat between them immediately; only the survivor's action continues.
+  // (from our target back to our source), the two armies will meet in the open
+  // field. Schedule the battle for the moment their rendered positions actually
+  // meet (progress fractions summing to 1) — the simulation resolves the pair
+  // there and the winner carries on from that spot.
   if (isAttack) {
-    const opposingIdx = nextState.activeActions.findIndex(
+    const opposing = nextState.activeActions.find(
       (a) =>
         a.type === "land_attack" &&
         a.sourceTileId === params.targetTileId &&
-        a.targetTileId === params.sourceTileId
+        a.targetTileId === params.sourceTileId &&
+        a.collisionPartnerId === undefined
     );
 
-    if (opposingIdx !== -1) {
-      const opposing = nextState.activeActions[opposingIdx]!;
-      // Both armies meet — remove the existing action from the queue.
-      nextState.activeActions.splice(opposingIdx, 1);
+    if (opposing) {
+      // Solve startA + kA·(t − sA) + (t − now)/dB = 1 for the meeting time,
+      // where kA scales the opposing army's remaining path over its duration.
+      const durA = opposing.resolvesAt - opposing.startedAt;
+      const startA = opposing.pathStartFraction ?? 0;
+      const kA = (1 - startA) / Math.max(0.001, durA);
+      const durB = duration;
+      const tMeet =
+        (1 - startA + kA * opposing.startedAt + nextState.now / durB) /
+        (kA + 1 / durB);
 
-      // Open-field combat: no terrain, fort, or defence-vet bonus for either
-      // side — both armies are attacking. Each army's attack-vet bonus does
-      // apply: the new army's via the standard attackerAttackVetLevel param;
-      // the opposing army's by pre-scaling its effective troop count with the
-      // same multiplier (the API has no defenderAttackVetLevel parameter).
-      const opposingEffectiveTroops = Math.floor(
-        opposing.troopsSent *
-          calculateVeteranAttackMultiplier(opposing.attackerAttackVetLevel)
-      );
-      const fieldCombat = resolveCombat({
-        attackerTroops:         Math.floor(troopsSent),
-        defenderTroops:         opposingEffectiveTroops,
-        defenderTerrain:        "plains",
-        defenderIsCapital:      false,
-        isSeaAttack:            false,
-        attackerArmoured:       action.attackerArmoured,
-        attackerAttackVetLevel: action.attackerAttackVetLevel,
-        defenderArmoured:       opposing.attackerArmoured,
-        defenderDefVetLevel:    0,
-        defenderFortLevel:      0,
-        randomValue:            Math.random(),
-      });
+      opposing.collisionPartnerId = action.id;
+      opposing.collisionMeetFraction = getRenderedProgressAt(opposing, tMeet);
+      opposing.resolvesAt = tMeet;
 
-      if (fieldCombat.attackerWon) {
-        // New army wins — it continues to the original target with survivors.
-        if (fieldCombat.attackerSurvivors <= 0) {
-          source.busyUntil = null;
-          return nextState;
-        }
-        const s = fieldCombat.attackerSurvivors;
-        const winnerCombatTime = calculateCombatResolutionTime(s, target.troops);
-        const winnerDuration = calculateLandAttackTime(
-          sourceDefinition, targetDefinition, s,
-          winnerCombatTime, action.attackerAttackVetLevel, defenderFortLevel
-        );
-        source.busyUntil = nextState.now + winnerDuration;
-        nextState.activeActions.push({
-          ...action,
-          id: createActionId(),
-          troopsSent: s,
-          resolvesAt: nextState.now + winnerDuration,
-        });
-      } else {
-        // Opposing army wins — it continues to its original target with survivors.
-        // Clear the new army's busy lock (those troops are lost).
-        source.busyUntil = null;
+      action.collisionPartnerId = opposing.id;
+      action.collisionMeetFraction = (tMeet - nextState.now) / durB;
+      action.resolvesAt = tMeet;
 
-        if (fieldCombat.defenderSurvivors > 0) {
-          const s = fieldCombat.defenderSurvivors;
-          const oppTargetTile = nextState.tiles[opposing.targetTileId];
-          const oppSourceDef  = nextState.tileDefinitions[opposing.sourceTileId];
-          const oppTargetDef  = nextState.tileDefinitions[opposing.targetTileId];
-          if (oppSourceDef && oppTargetDef) {
-            const winnerCombatTime = calculateCombatResolutionTime(s, oppTargetTile?.troops ?? 0);
-            const winnerDuration = calculateLandAttackTime(
-              oppSourceDef, oppTargetDef, s,
-              winnerCombatTime, opposing.attackerAttackVetLevel,
-              oppTargetTile?.fortLevel ?? 0
-            );
-            const oppSourceTile = nextState.tiles[opposing.sourceTileId];
-            if (oppSourceTile) oppSourceTile.busyUntil = nextState.now + winnerDuration;
-            nextState.activeActions.push({
-              ...opposing,
-              id: createActionId(),
-              troopsSent: s,
-              startedAt: nextState.now,
-              resolvesAt: nextState.now + winnerDuration,
-            });
-          }
-        }
+      // Both source tiles stay busy until the battle resolves; the winner's is
+      // re-extended when its continuation is created. Unlocking the defender's
+      // source at tMeet (instead of its army's original arrival time) is fair —
+      // its army's fate is decided then.
+      source.busyUntil = tMeet;
+      const opposingSource = nextState.tiles[opposing.sourceTileId];
+      if (opposingSource && opposingSource.owner === opposing.owner) {
+        opposingSource.busyUntil = tMeet;
       }
-      return nextState;
     }
   }
   // ── End head-on collision check ───────────────────────────────────────────
@@ -358,6 +323,54 @@ export function createSeaAction(params: {
   if (targetBusyLocked) {
     nextTarget.busyUntil = resolvesAt;
   }
+
+  // ── Head-on collision check (sea) ──────────────────────────────────────────
+  // Two sea attacks crossing the same lane in opposite directions meet on the
+  // water. Same scheduling as land collisions: pair them, set both to resolve
+  // at the meeting point, and let the simulation fight it out at sea (where
+  // armour and veteran bonuses don't apply — see resolveFieldBattle).
+  if (isAttack) {
+    const opposing = nextState.activeActions.find(
+      (a) =>
+        a.type === "sea_attack" &&
+        a.sourceTileId === params.targetTileId &&
+        a.targetTileId === params.sourceTileId &&
+        a.collisionPartnerId === undefined
+    );
+
+    if (opposing) {
+      const durA = opposing.resolvesAt - opposing.startedAt;
+      const startA = opposing.pathStartFraction ?? 0;
+      const kA = (1 - startA) / Math.max(0.001, durA);
+      const durB = duration;
+      const tMeet =
+        (1 - startA + kA * opposing.startedAt + nextState.now / durB) /
+        (kA + 1 / durB);
+
+      // Release the defender busy-locks the two invasions placed on each
+      // other's home tiles — the armies' fate is decided at sea at tMeet.
+      // Only shorten locks these specific actions set, never someone else's.
+      if (opposing.targetBusyLocked) {
+        const opposingTarget = nextState.tiles[opposing.targetTileId];
+        if (opposingTarget && opposingTarget.busyUntil === opposing.resolvesAt) {
+          opposingTarget.busyUntil = tMeet;
+        }
+      }
+      if (targetBusyLocked && nextTarget.busyUntil === resolvesAt) {
+        nextTarget.busyUntil = tMeet;
+      }
+
+      opposing.collisionPartnerId = action.id;
+      opposing.collisionMeetFraction =
+        startA + kA * (tMeet - opposing.startedAt);
+      opposing.resolvesAt = tMeet;
+
+      action.collisionPartnerId = opposing.id;
+      action.collisionMeetFraction = (tMeet - nextState.now) / durB;
+      action.resolvesAt = tMeet;
+    }
+  }
+  // ── End head-on collision check ────────────────────────────────────────────
 
   nextState.activeActions.push(action);
 

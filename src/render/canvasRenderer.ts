@@ -99,13 +99,23 @@ export interface FloatingNotification {
   color?: string;
   /** Horizontal offset as a fraction of tile size, so two numbers can share a tile. */
   offsetX?: number;
+  /** Anchor mid-path between anchorFromTileId and tileId (field battles). */
+  anchorFromTileId?: string;
+  anchorFraction?: number;
+  /** Sea-lane battle: anchor along the Bézier arc, not the straight line. */
+  anchorAtSea?: boolean;
 }
 
-/** A short-lived battle impact effect on the target tile. */
+/** A short-lived battle impact effect on the target tile (or mid-path for
+ * open-field battles, when fromTileId/pathFraction are set). */
 export interface ClashEffect {
   tileId: string;
   time: number; // game time the combat resolved
   attackerWon: boolean;
+  fromTileId?: string;
+  pathFraction?: number;
+  /** Sea-lane battle: position along the Bézier arc, not the straight line. */
+  atSea?: boolean;
 }
 
 export interface TerritoryFlash {
@@ -680,9 +690,14 @@ function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layo
     const target = axialToPixel(targetDefinition.coord, layout);
 
     const duration = action.resolvesAt - action.startedAt;
-    const progress = duration > 0
+    const rawProgress = duration > 0
       ? Math.max(0, Math.min(1, (state.now - action.startedAt) / duration))
       : 1;
+    // Continuations after a field battle start mid-path; colliding armies only
+    // travel as far as the meeting point by their (shared) resolve time.
+    const startFraction = action.pathStartFraction ?? 0;
+    const endFraction = action.collisionMeetFraction ?? 1;
+    const progress = startFraction + (endFraction - startFraction) * rawProgress;
 
     const isAttack = action.type === "land_attack" || action.type === "sea_attack";
 
@@ -1048,7 +1063,22 @@ function drawNotifications(
     const definition = state.tileDefinitions[n.tileId];
     if (!definition) continue;
 
-    const center = axialToPixel(definition.coord, layout);
+    let center = axialToPixel(definition.coord, layout);
+    // Field-battle casualties float over the meeting point, not the tile.
+    // Sea battles sit on the lane's Bézier arc; land ones on the straight line.
+    const fromDef = n.anchorFromTileId ? state.tileDefinitions[n.anchorFromTileId] : null;
+    if (fromDef && n.anchorFraction !== undefined) {
+      const from = axialToPixel(fromDef.coord, layout);
+      if (n.anchorAtSea) {
+        const arc = getSeaArcBezier(from, center, layout.size);
+        center = bezierPoint(arc.start, arc.control, arc.end, n.anchorFraction);
+      } else {
+        center = {
+          x: from.x + (center.x - from.x) * n.anchorFraction,
+          y: from.y + (center.y - from.y) * n.anchorFraction,
+        };
+      }
+    }
     const progress = age / NOTIFICATION_DURATION;
     const alpha = Math.max(0, 1 - progress * progress); // quadratic fade
     const riseY = center.y - layout.size * 0.9 - progress * layout.size * 0.8;
@@ -1097,7 +1127,24 @@ function drawClashes(
     const definition = state.tileDefinitions[clash.tileId];
     if (!definition) continue;
 
-    const center = axialToPixel(definition.coord, layout);
+    let center = axialToPixel(definition.coord, layout);
+    // Open-field battles flash at the meeting point along the path — on the
+    // sea-lane arc for ship battles, on the straight line for land ones.
+    // The -10 cancels the +10 troop-marker offset applied when drawing below.
+    const fromDef = clash.fromTileId ? state.tileDefinitions[clash.fromTileId] : null;
+    if (fromDef && clash.pathFraction !== undefined) {
+      const from = axialToPixel(fromDef.coord, layout);
+      if (clash.atSea) {
+        const arc = getSeaArcBezier(from, center, layout.size);
+        const p = bezierPoint(arc.start, arc.control, arc.end, clash.pathFraction);
+        center = { x: p.x, y: p.y - 10 };
+      } else {
+        center = {
+          x: from.x + (center.x - from.x) * clash.pathFraction,
+          y: from.y + (center.y - from.y) * clash.pathFraction - 10,
+        };
+      }
+    }
     const t = age / CLASH_DURATION;
     const fade = (1 - t) * (1 - t);
 

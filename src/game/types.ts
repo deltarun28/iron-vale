@@ -167,6 +167,13 @@ export interface CombatEvent {
   attackerWon: boolean;
   attackerLosses: number;
   defenderLosses: number;
+  /** For open-field battles: the combat happened mid-path between fromTileId
+   * and targetTileId at this fraction, not on the target tile itself. */
+  fromTileId?: string;
+  pathFraction?: number;
+  /** True when the mid-path battle happened on a sea lane — the renderer
+   * places the effect along the Bézier arc rather than the straight line. */
+  atSea?: boolean;
 }
 
 /** One point on the match timeline: tile counts per player, sampled every ~5s. */
@@ -198,6 +205,20 @@ export interface ActiveAction {
   attackerAttackVetLevel: VetLevel;
   attackerDefVetLevel: VetLevel;
   defenderFortLevel: FortLevel; // captured at dispatch so timing uses it
+
+  // Set when this army will meet an opposing army mid-path: the id of the
+  // opposing action. Both actions' resolvesAt is the meeting time, and the
+  // pair resolves as an open-field battle at that point.
+  collisionPartnerId?: string;
+
+  // Rendered fraction along source→target where the meeting happens. While a
+  // collision is pending this is the upper bound of the army's visual progress
+  // (the marker travels to the meeting point by resolvesAt, not to the target).
+  collisionMeetFraction?: number;
+
+  // Rendered fraction along source→target where this army started moving.
+  // Field-battle continuations begin mid-path; plain actions omit it (0).
+  pathStartFraction?: number;
 
   // For chained reinforcements: tile IDs still to visit after the current targetTileId.
   // When a leg resolves and this is non-empty, troops continue to the next tile

@@ -31,17 +31,29 @@ import {
   getTerritoryBonus,
   getTerritoryController,
 } from "./territories";
-import { resolveCombat } from "./combat";
+import {
+  calculateCombatResolutionTime,
+  calculateVeteranAttackMultiplier,
+  resolveCombat,
+} from "./combat";
 import { applyGoldProduction, handleTileCaptureEconomy } from "./economy";
-import { canSeaAttackCaptureCapital } from "./movement";
+import {
+  calculateLandAttackTime,
+  calculateLandMoveTime,
+  calculateSeaAttackTime,
+  calculateSeaMoveTime,
+  canSeaAttackCaptureCapital,
+  findSeaLaneBetween,
+} from "./movement";
 import {
   applyEscrowExpiry,
+  areAllies,
   checkWinCondition,
   cloneGameState,
   getActivePlayerIds,
   isPlayer,
 } from "./state";
-import { createLandAction } from "./actions";
+import { createActionId, createLandAction } from "./actions";
 import type {
   ActiveAction,
   GameState,
@@ -215,6 +227,45 @@ function applyTroopProduction(draft: GameState, deltaSeconds: number): void {
   }
 }
 
+// Turns an army around: it marches (or sails) back from where it arrived to
+// the tile it came from, as a reinforce action carrying its armour and vets.
+// Used when a destination was captured by an ally mid-flight, or a chained
+// move's pass-through tile was taken. No tile is busy-locked — the army is
+// simply in flight; arrival handling deals with whatever it finds at home.
+function sendArmyHome(draft: GameState, action: ActiveAction): GameState {
+  const hereDef = draft.tileDefinitions[action.targetTileId];
+  const homeDef = draft.tileDefinitions[action.sourceTileId];
+  if (!hereDef || !homeDef) return draft;
+
+  let duration: number;
+  if (action.isSeaAction) {
+    const lane = findSeaLaneBetween(draft.seaLanes, action.sourceTileId, action.targetTileId);
+    // The lane it sailed out on always exists; the fallback is defensive.
+    duration = lane ? calculateSeaMoveTime(lane.distance) : 3;
+  } else {
+    duration = calculateLandMoveTime(hereDef, homeDef, action.troopsSent);
+  }
+
+  draft.activeActions.push({
+    id: createActionId(),
+    type: action.isSeaAction ? "sea_move" : "land_reinforce",
+    owner: action.owner,
+    sourceTileId: action.targetTileId, // travelling back the way it came
+    targetTileId: action.sourceTileId,
+    troopsSent: action.troopsSent,
+    startedAt: draft.now,
+    resolvesAt: draft.now + duration,
+    isSeaAction: action.isSeaAction,
+    targetBusyLocked: false,
+    attackerArmoured: action.attackerArmoured,
+    attackerAttackVetLevel: action.attackerAttackVetLevel,
+    attackerDefVetLevel: action.attackerDefVetLevel,
+    defenderFortLevel: 0,
+  });
+
+  return draft;
+}
+
 // Mutates the draft in place — callers must own the state (see updateGame).
 // May return a successor state when the chain continues (createLandAction is
 // immutable and returns a fresh state).
@@ -233,16 +284,23 @@ function resolveReinforceAction(draft: GameState, action: ActiveAction): GameSta
       return draft;
     }
 
-    // Abort if this pass-through tile was captured — troops can't cross enemy territory.
-    if (target.owner !== action.owner) return draft;
+    // Pass-through tile was captured mid-transit — troops can't cross it, so
+    // the army turns around and heads back to the tile this leg started from.
+    if (target.owner !== action.owner) return sendArmyHome(draft, action);
 
     target.troops += action.troopsSent;
     return continueChain(draft, action, action.targetTileId);
   }
 
-  // If the tile was captured while troops were in transit, attack it instead
-  // of reinforcing the enemy who now holds it.
+  // The tile changed hands while troops were in transit. A teammate holding
+  // it now means the troops simply join the allied garrison (never fight an
+  // ally, and never bounce home forever between two allied tiles); an enemy
+  // holding it means the reinforce becomes an attack.
   if (target.owner !== action.owner) {
+    if (areAllies(draft, target.owner, action.owner)) {
+      target.troops += action.troopsSent;
+      return draft;
+    }
     return resolveAttackAction(draft, { ...action, type: "land_attack" });
   }
 
@@ -307,6 +365,12 @@ function resolveAttackAction(draft: GameState, action: ActiveAction): GameState 
   if (target.owner === action.owner) {
     target.troops += action.troopsSent;
     return continueChain(nextState, action, action.targetTileId);
+  }
+
+  // A teammate captured the tile while this attack was in flight. First army
+  // in takes the tile; this one turns around and marches home.
+  if (areAllies(nextState, target.owner, action.owner)) {
+    return sendArmyHome(nextState, action);
   }
 
   const previousOwner = target.owner;
@@ -381,6 +445,130 @@ function resolveAttackAction(draft: GameState, action: ActiveAction): GameState 
   return continueChain(nextState, action, action.targetTileId);
 }
 
+// Resolves an open-field battle between two armies that met mid-path.
+// No terrain, fort, or defence-vet bonus for either side — both are attacking.
+// The later-dispatched army takes the "attacker" role.
+//
+// On land, each army's attack-vet bonus applies: the attacker's via the
+// standard parameter, the defender's by pre-scaling its effective troop count
+// (the combat API has no defenderAttackVetLevel parameter), and armour counts.
+// At sea, armour and veteran bonuses do NOT apply — troops crammed in boats
+// fight as raw numbers. The winner continues toward its original target from
+// the meeting point with the survivors.
+function resolveFieldBattle(
+  draft: GameState,
+  a: ActiveAction,
+  b: ActiveAction
+): GameState {
+  const attacker = a.startedAt >= b.startedAt ? a : b;
+  const defender = attacker === a ? b : a;
+  const isSea = attacker.isSeaAction;
+
+  const defenderEffectiveTroops = isSea
+    ? Math.floor(defender.troopsSent)
+    : Math.floor(
+        defender.troopsSent *
+          calculateVeteranAttackMultiplier(defender.attackerAttackVetLevel)
+      );
+
+  const combat = resolveCombat({
+    attackerTroops: Math.floor(attacker.troopsSent),
+    defenderTroops: defenderEffectiveTroops,
+    defenderTerrain: "plains",
+    defenderIsCapital: false,
+    isSeaAttack: false, // the amphibious modifier is for assaulting a shore, not ship-to-ship
+    attackerArmoured: isSea ? false : attacker.attackerArmoured,
+    attackerAttackVetLevel: isSea ? 0 : attacker.attackerAttackVetLevel,
+    defenderArmoured: isSea ? false : defender.attackerArmoured,
+    defenderFortLevel: 0,
+    defenderDefVetLevel: 0,
+    randomValue: Math.random(),
+  });
+
+  const winner = combat.attackerWon ? attacker : defender;
+  const survivors = combat.attackerWon
+    ? combat.attackerSurvivors
+    : Math.min(defender.troopsSent, combat.defenderSurvivors);
+
+  // The clash happens at the meeting point, not on a tile — the renderer
+  // places the effect along the attacker's path (arc for sea lanes).
+  draft.combatEvents.push({
+    time: draft.now,
+    targetTileId: attacker.targetTileId,
+    attackerOwner: attacker.owner,
+    defenderOwner: defender.owner,
+    attackerWon: combat.attackerWon,
+    attackerLosses:
+      Math.floor(attacker.troopsSent) - (combat.attackerWon ? survivors : 0),
+    defenderLosses:
+      Math.floor(defender.troopsSent) - (combat.attackerWon ? 0 : survivors),
+    fromTileId: attacker.sourceTileId,
+    pathFraction: attacker.collisionMeetFraction ?? 0.5,
+    ...(isSea ? { atSea: true } : {}),
+  });
+
+  if (survivors <= 0) return draft;
+
+  // Winner carries on from the meeting point with proportional remaining time.
+  const target = draft.tiles[winner.targetTileId];
+  const sourceDef = draft.tileDefinitions[winner.sourceTileId];
+  const targetDef = draft.tileDefinitions[winner.targetTileId];
+  if (!target || !sourceDef || !targetDef) return draft;
+
+  const meetFraction = winner.collisionMeetFraction ?? 0.5;
+  const combatTime = calculateCombatResolutionTime(survivors, target.troops);
+  const fullDuration = isSea
+    ? calculateSeaAttackTime(
+        findSeaLaneBetween(draft.seaLanes, winner.sourceTileId, winner.targetTileId)
+          ?.distance ?? 3,
+        combatTime,
+        winner.attackerAttackVetLevel,
+        target.fortLevel
+      )
+    : calculateLandAttackTime(
+        sourceDef,
+        targetDef,
+        survivors,
+        combatTime,
+        winner.attackerAttackVetLevel,
+        target.fortLevel
+      );
+  const remaining = Math.max(0.15, fullDuration * (1 - meetFraction));
+  const resolvesAt = draft.now + remaining;
+
+  if (isSea) {
+    // Sea attacks don't lock their source; re-apply the defender busy-lock
+    // the invasion originally placed (shortened to tMeet when pairing).
+    if (winner.targetBusyLocked && target.owner !== winner.owner) {
+      target.busyUntil = Math.max(target.busyUntil ?? 0, resolvesAt);
+    }
+  } else {
+    // Keep the winner's source tile busy until its army resolves — but only
+    // if it still belongs to the winner (it may have been captured mid-flight).
+    const winnerSource = draft.tiles[winner.sourceTileId];
+    if (winnerSource && winnerSource.owner === winner.owner) {
+      winnerSource.busyUntil = resolvesAt;
+    }
+  }
+
+  const {
+    collisionPartnerId: _partner,
+    collisionMeetFraction: _meet,
+    ...continuation
+  } = winner;
+  draft.activeActions.push({
+    ...continuation,
+    id: createActionId(),
+    troopsSent: survivors,
+    startedAt: draft.now,
+    resolvesAt,
+    pathStartFraction: meetFraction,
+    defenderFortLevel: target.fortLevel,
+  });
+
+  return draft;
+}
+
 // Finds all actions whose resolvesAt timestamp has passed, resolves them,
 // and returns the updated state. Mutates the draft in place — callers must
 // own the state (see updateGame). No-op (and allocation-free apart from the
@@ -397,7 +585,24 @@ function applyCompletedActions(draft: GameState): GameState {
   );
 
   let nextState = draft;
+  const handledIds = new Set<string>();
   for (const action of completedActions) {
+    if (handledIds.has(action.id)) continue;
+
+    // Colliding pairs share a resolvesAt and resolve together mid-path.
+    if (action.collisionPartnerId !== undefined) {
+      const partner = completedActions.find(
+        (candidate) => candidate.id === action.collisionPartnerId
+      );
+      if (partner) {
+        handledIds.add(partner.id);
+        nextState = resolveFieldBattle(nextState, action, partner);
+        continue;
+      }
+      // Partner missing (shouldn't happen — pairs share a timestamp);
+      // fall through and treat as a normal arrival.
+    }
+
     if (action.type === "land_reinforce" || action.type === "sea_move") {
       nextState = resolveReinforceAction(nextState, action);
     } else {
