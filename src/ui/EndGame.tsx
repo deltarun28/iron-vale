@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { asset } from "../assets";
+import { checkAndUnlockAchievements } from "../game/achievements";
 import { getActivePlayerIds, getTeamId } from "../game/state";
 import { loadStats, recordGameResult } from "../game/stats";
 import type { GameState, PlayerId } from "../game/types";
+import { MatchTimeline } from "./MatchTimeline";
 
 interface EndGameProps {
   state: GameState;
@@ -35,9 +37,11 @@ export function EndGame({
 
   // Record this game and snapshot the updated career stats on first render.
   // useState lazy init runs once on mount so the result is recorded exactly once.
-  const [{ career, isNewBest }] = useState(() => {
+  // Achievements are checked after recording so career-count medals see this game.
+  const [{ career, isNewBest, unlocked }] = useState(() => {
     const newBest = recordGameResult(won, state.now, state.mapId, state.ai.difficulty, state.playerMode);
-    return { career: loadStats(), isNewBest: newBest };
+    const newlyUnlocked = checkAndUnlockAchievements({ state, won, humanPlayerId });
+    return { career: loadStats(), isNewBest: newBest, unlocked: newlyUnlocked };
   });
 
   const activeIds = getActivePlayerIds(state);
@@ -113,6 +117,21 @@ export function EndGame({
             <> · Best: {formatDuration(career.fastestWin)}</>
           )}
         </div>
+
+        {unlocked.length > 0 && (
+          <div className="end-game__achievements">
+            {unlocked.map((def) => (
+              <div key={def.id} className="end-game__achievement">
+                <span className="end-game__achievement-icon">{def.icon}</span>
+                <span className="end-game__achievement-text">
+                  <strong>{def.name}</strong> — {def.description}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <MatchTimeline state={state} humanPlayerId={humanPlayerId} />
 
         <div className="end-game__divider" />
 

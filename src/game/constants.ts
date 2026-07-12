@@ -11,15 +11,7 @@
  * or difficulty logic.
  */
 
-import type { Difficulty, TerrainType } from "./types";
-
-// "as const" tells TypeScript to treat this object as read-only and to infer
-// the narrowest possible types (e.g. "player1" instead of just string).
-export const PLAYERS = {
-  PLAYER_1: "player1",
-  PLAYER_2: "player2",
-  NEUTRAL: "neutral",
-} as const;
+import type { FortLevel, TerrainType, VetLevel } from "./types";
 
 export const STARTING_GOLD = 5;
 
@@ -246,7 +238,63 @@ export const AI = {
   CAPITAL_PATH_BONUS_BASE: 55,    // Hard: bonus for tiles on path to enemy capital
   CAPITAL_PATH_BONUS_FALLOFF: 12, // bonus decays by this much per BFS hop
   ENCIRCLE_BONUS: 30,             // Hard: bonus for tiles adjacent to enemy capital
+
+  // ── Hard-mode intelligence ──────────────────────────────────────────────
+  // All fair-play: these use only information visible to any player (combat
+  // modifiers, in-flight actions, production rates) — no resource bonuses.
+
+  // Attack sizing: hard sends the smallest force whose estimated win
+  // probability (real combat modifiers + defender growth projection) clears
+  // this bar, plus ATTACK_CUSHION.
+  HARD_ATTACK_WIN_PROBABILITY: 0.7,
+  // Full-garrison attacks below this estimated probability are dropped.
+  HARD_WIN_FLOOR: 0.55,
+  // Capitals, towns, and bridges justify bigger gambles.
+  HARD_WIN_FLOOR_HIGH_VALUE: 0.45,
+
+  // In-flight attacks toward a tile count extra in threat assessment —
+  // unlike an idle adjacent garrison, they are already committed.
+  INFLIGHT_THREAT_WEIGHT: 1.2,
+
+  // Retaking our own capital while the escrow window is open recovers gold.
+  ESCROW_RECLAIM_BONUS: 90,
+
+  // Tiles at/near their production cap waste production; prefer acting from
+  // them so their stacks get put to work.
+  NEAR_CAP_SOURCE_BONUS: 12,
+  NEAR_CAP_FRACTION: 0.85, // "near cap" = troops ≥ this fraction of stopsAt
+
+  // Cap on the rear-stack mobilization bonus in logistics reinforcement.
+  LOGISTICS_BONUS_MAX: 20,
+
+  // Hard never strips its capital below this when attacking from it —
+  // losing the capital costs the gold cap and triggers escrow.
+  HARD_CAPITAL_MIN_GARRISON: 5,
 } as const;
+
+// ── Level clamp helpers ─────────────────────────────────────────────────────
+// Centralise the min/max arithmetic on veteran and fort levels so call sites
+// don't need `as` casts back to the literal union types.
+
+/** One veteran level higher, capped at the maximum. */
+export function incrementVetLevel(level: VetLevel): VetLevel {
+  return Math.min(VETERAN.MAX_LEVEL, level + 1) as VetLevel;
+}
+
+/** The higher of two veteran levels (merging garrisons keeps the best). */
+export function maxVetLevel(a: VetLevel, b: VetLevel): VetLevel {
+  return Math.max(a, b) as VetLevel;
+}
+
+/** One fort level higher, capped at the maximum. */
+export function incrementFortLevel(level: FortLevel): FortLevel {
+  return Math.min(FORT.MAX_LEVEL, level + 1) as FortLevel;
+}
+
+/** Fort level after a capture — the attackers damage the walls. */
+export function reduceFortLevelOnCapture(level: FortLevel): FortLevel {
+  return Math.max(0, level - FORT.CAPTURE_LEVEL_REDUCTION) as FortLevel;
+}
 
 /**
  * Returns the raw defence multiplier for a terrain type.
@@ -264,37 +312,4 @@ export function getTerrainDefenceMultiplier(terrain: TerrainType): number {
     default:
       return 1.0;
   }
-}
-
-/**
- * Returns the think-interval and action-budget settings for a given difficulty.
- * Easy thinks slowly and acts once; Hard thinks fast and can act three times per
- * tick. Extracted here so both ai.ts and any future UI tooltips share one source.
- */
-export function getAIDifficultyTiming(difficulty: Difficulty): {
-  minThinkSeconds: number;
-  maxThinkSeconds: number;
-  maxActionsPerThink: number;
-} {
-  if (difficulty === "easy") {
-    return {
-      minThinkSeconds: AI.EASY_THINK_MIN_SECONDS,
-      maxThinkSeconds: AI.EASY_THINK_MAX_SECONDS,
-      maxActionsPerThink: AI.EASY_MAX_ACTIONS_PER_THINK,
-    };
-  }
-
-  if (difficulty === "hard") {
-    return {
-      minThinkSeconds: AI.HARD_THINK_MIN_SECONDS,
-      maxThinkSeconds: AI.HARD_THINK_MAX_SECONDS,
-      maxActionsPerThink: AI.HARD_MAX_ACTIONS_PER_THINK,
-    };
-  }
-
-  return {
-    minThinkSeconds: AI.NORMAL_THINK_MIN_SECONDS,
-    maxThinkSeconds: AI.NORMAL_THINK_MAX_SECONDS,
-    maxActionsPerThink: AI.NORMAL_MAX_ACTIONS_PER_THINK,
-  };
 }

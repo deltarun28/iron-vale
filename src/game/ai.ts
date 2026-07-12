@@ -19,10 +19,21 @@
  */
 
 import { applyArmour, buildFortification, createLandAction, createSeaAction } from "./actions";
-import { AI, ARMOUR, FORT } from "./constants";
-import { validateLandAction, validateSeaAction } from "./movement";
+import { estimateCombatOutcome } from "./combat";
+import { AI, ARMOUR, COMBAT, FORT, PRODUCTION_CAPS } from "./constants";
+import { projectDefenderTroopsAtArrival } from "./forecast";
+import {
+  calculateLandAttackTime,
+  calculateSeaAttackTime,
+  findSeaLaneBetween,
+  getSeaNeighbors,
+  validateLandAction,
+  validateSeaAction,
+} from "./movement";
+import { getProductionCapKey } from "./simulation";
 import { cloneGameState, getOpponents, isPlayer } from "./state";
 import type {
+  AIPlayerState,
   AIStance,
   Difficulty,
   GameState,
@@ -242,12 +253,48 @@ function computeDistancesToOpponentCapital(
   return distances;
 }
 
+// ── BFS distance from every owned tile to the nearest non-owned tile ───────
+
+// Used by Hard's logistics to funnel interior troops toward the front.
+// Non-owned tiles seed at 0, so a frontier tile scores 1 and deep interior
+// tiles score higher. Reinforcing strictly downhill moves rear production
+// to where it can fight instead of idling at the cap.
+function computeDistancesToFrontier(
+  state: GameState,
+  playerId: PlayerId
+): Map<string, number> {
+  const distances = new Map<string, number>();
+  const queue: string[] = [];
+
+  for (const tile of Object.values(state.tiles)) {
+    if (tile.owner !== playerId) {
+      distances.set(tile.id, 0);
+      queue.push(tile.id);
+    }
+  }
+
+  while (queue.length > 0) {
+    const currentId = queue.shift() as string;
+    const currentDist = distances.get(currentId) as number;
+    const def = state.tileDefinitions[currentId];
+    if (!def) continue;
+
+    for (const adjId of def.adjacent) {
+      if (distances.has(adjId)) continue;
+      distances.set(adjId, currentDist + 1);
+      queue.push(adjId);
+    }
+  }
+
+  return distances;
+}
+
 // ── Stance ──────────────────────────────────────────────────────────────────
 
 function chooseAIStance(
   state: GameState,
   playerId: PlayerId,
-  currentStance: AIStance
+  current: AIPlayerState
 ): AIStance {
   const powerRatio = getPowerRatio(state, playerId);
   const territoryShare = getTerritoryShare(state, playerId);
@@ -257,8 +304,8 @@ function chooseAIStance(
   if (state.now < AI.EARLY_GAME_AGGRESSIVE_SECONDS) return "aggressive";
 
   const stanceCanChange =
-    state.now - state.ai.stanceChangedAt >= AI.MIN_STANCE_DURATION_SECONDS;
-  if (!stanceCanChange) return currentStance;
+    state.now - current.stanceChangedAt >= AI.MIN_STANCE_DURATION_SECONDS;
+  if (!stanceCanChange) return current.stance;
 
   if (powerRatio < AI.POWER_RATIO_DEFENSIVE_THRESHOLD) return "defensive";
   if (
@@ -284,12 +331,26 @@ function getTileVulnerabilityValue(definition: TileDefinition): number {
 // where the attacker mass approaches the defender's effective garrison
 // (troops + a small fort bonus) is flagged. Busy enemy tiles are ignored —
 // they can't launch a new attack this think.
+// Hard also counts attacks already in flight toward each tile — they're drawn
+// on screen for every player, and unlike an idle garrison they are committed.
 function assessOwnTileThreats(
   state: GameState,
   playerId: PlayerId
 ): TileThreat[] {
   const opponents = getOpponentIds(state, playerId);
   const threats: TileThreat[] = [];
+
+  const inflightByTile = new Map<string, number>();
+  if (state.ai.difficulty === "hard") {
+    for (const action of state.activeActions) {
+      if (action.type !== "land_attack" && action.type !== "sea_attack") continue;
+      if (!isEnemyOwner(opponents, action.owner)) continue;
+      inflightByTile.set(
+        action.targetTileId,
+        (inflightByTile.get(action.targetTileId) ?? 0) + action.troopsSent
+      );
+    }
+  }
 
   for (const tile of getPlayerTiles(state, playerId)) {
     const def = state.tileDefinitions[tile.id];
@@ -306,6 +367,8 @@ function assessOwnTileThreats(
         threatLevel += adj.troops;
       }
     }
+
+    threatLevel += (inflightByTile.get(tile.id) ?? 0) * AI.INFLIGHT_THREAT_WEIGHT;
 
     if (threatLevel <= 0) continue;
 
@@ -345,11 +408,143 @@ function getTargetBaseValue(
   return 18;
 }
 
-// A coarse win-probability proxy. Real combat factors in fort, vet, terrain —
-// this is enough to keep the AI from launching obviously losing attacks.
+// A coarse win-probability proxy used by Easy and Normal. Real combat factors
+// in fort, vet, terrain — this is enough to keep those difficulties from
+// launching obviously losing attacks. Hard uses the exact estimator below.
 function estimateWinChance(attackerTroops: number, defenderTroops: number): number {
   if (defenderTroops <= 0) return 1;
   return attackerTroops / Math.max(1, attackerTroops + defenderTroops);
+}
+
+// ── Hard-mode combat planning (fair-play: public information only) ──────────
+
+// Estimates one candidate force size against the projected defender using the
+// exact combat modifiers (terrain, fort, armour, vets, capital, sea, bias).
+function estimateHardAttack(params: {
+  state: GameState;
+  source: TileState;
+  sourceDef: TileDefinition;
+  target: TileState;
+  targetDef: TileDefinition;
+  troopsSent: number;
+  isSea: boolean;
+  seaLaneDistance: number;
+}): number {
+  const travelSeconds = params.isSea
+    ? calculateSeaAttackTime(
+        params.seaLaneDistance,
+        0,
+        params.source.attackVetLevel,
+        params.target.fortLevel
+      )
+    : calculateLandAttackTime(
+        params.sourceDef,
+        params.targetDef,
+        params.troopsSent,
+        0,
+        params.source.attackVetLevel,
+        params.target.fortLevel
+      );
+
+  const projectedDefenders = Math.floor(
+    projectDefenderTroopsAtArrival(params.state, params.target, params.targetDef, travelSeconds)
+  );
+
+  return estimateCombatOutcome({
+    attackerTroops: params.troopsSent,
+    defenderTroops: projectedDefenders,
+    defenderTerrain: params.targetDef.terrain,
+    defenderIsCapital: params.targetDef.isCapital,
+    isSeaAttack: params.isSea,
+    attackerArmoured: params.source.armoured,
+    attackerAttackVetLevel: params.source.attackVetLevel,
+    defenderArmoured: params.target.armoured,
+    defenderFortLevel: params.target.fortLevel,
+    defenderDefVetLevel: params.target.defVetLevel,
+  }).winProbability;
+}
+
+// Sizes a hard-mode attack: the smallest force whose estimated win probability
+// clears HARD_ATTACK_WIN_PROBABILITY, plus a cushion. Returns null when even
+// the full deployable garrison can't clear the floor for this target type —
+// hard doesn't throw away armies on bad odds.
+function sizeHardAttack(params: {
+  state: GameState;
+  source: TileState;
+  sourceDef: TileDefinition;
+  target: TileState;
+  targetDef: TileDefinition;
+  isSea: boolean;
+  seaLaneDistance?: number;
+  isHighValue: boolean;
+}): { troopsSent: number; winProbability: number } | null {
+  // Losing the capital costs the gold cap and triggers escrow — keep a real
+  // garrison there instead of stripping it to the standard minimum.
+  const minGarrison = params.sourceDef.isCapital
+    ? AI.HARD_CAPITAL_MIN_GARRISON
+    : AI.ATTACK_MIN_GARRISON_LEFT;
+  const maxAvailable = Math.floor(params.source.troops) - minGarrison;
+  if (maxAvailable < 1) return null;
+
+  const laneDistance = params.seaLaneDistance ?? 1;
+  const estimateFor = (troopsSent: number): number =>
+    estimateHardAttack({
+      state: params.state,
+      source: params.source,
+      sourceDef: params.sourceDef,
+      target: params.target,
+      targetDef: params.targetDef,
+      troopsSent,
+      isSea: params.isSea,
+      seaLaneDistance: laneDistance,
+    });
+
+  // If the full garrison can't clear the floor, don't attack at all.
+  const fullProbability = estimateFor(maxAvailable);
+  const floor = params.isHighValue ? AI.HARD_WIN_FLOOR_HIGH_VALUE : AI.HARD_WIN_FLOOR;
+  if (fullProbability < floor) return null;
+
+  // Linear scan is fine: garrisons are small (≤ ~50) and this runs per think,
+  // not per frame. Win probability rises with force size, so the first hit is
+  // the smallest sufficient force.
+  for (let troopsSent = 1; troopsSent <= maxAvailable; troopsSent += 1) {
+    if (estimateFor(troopsSent) >= AI.HARD_ATTACK_WIN_PROBABILITY) {
+      const withCushion = Math.min(maxAvailable, troopsSent + AI.ATTACK_CUSHION);
+      return { troopsSent: withCushion, winProbability: estimateFor(withCushion) };
+    }
+  }
+
+  // Nothing clears the bar but the full garrison clears the floor — commit
+  // everything (worthwhile gamble on high-value targets).
+  return { troopsSent: maxAvailable, winProbability: fullProbability };
+}
+
+// True when a tile's garrison is close enough to its production cap that
+// production is being throttled — its stack should be put to work.
+function isSourceNearCap(state: GameState, source: TileState): boolean {
+  const def = state.tileDefinitions[source.id];
+  if (!def) return false;
+  const capKey = getProductionCapKey({ terrain: def.terrain, isCapital: def.isCapital });
+  return source.troops >= PRODUCTION_CAPS[capKey].stopsAt * AI.NEAR_CAP_FRACTION;
+}
+
+// Bonus for retaking the AI's own captured capital while the escrow window is
+// open — success recovers the escrowed gold on top of the capital itself.
+function getEscrowReclaimBonus(
+  state: GameState,
+  playerId: PlayerId,
+  targetTileId: string
+): number {
+  const player = state.players[playerId];
+  if (
+    player &&
+    player.escrowCapitalId === targetTileId &&
+    player.escrowExpiresAt !== null &&
+    state.now <= player.escrowExpiresAt
+  ) {
+    return AI.ESCROW_RECLAIM_BONUS;
+  }
+  return 0;
 }
 
 // Easy keeps a flat 65%-of-source rule so its behaviour stays predictable.
@@ -392,19 +587,54 @@ function scoreLandAttack(params: {
   capitalDistances: Map<string, number>;
 }): CandidateAction | null {
   const targetDef = params.state.tileDefinitions[params.target.id];
-  if (!targetDef) return null;
+  const sourceDef = params.state.tileDefinitions[params.source.id];
+  if (!targetDef || !sourceDef) return null;
 
   const minTroops =
     params.difficulty === "easy" ? 7 : AI.MIN_TROOPS_TO_ATTACK_NORMAL;
   if (params.source.troops < minTroops) return null;
 
-  const troopsSent = computeTroopsToSend(
-    params.source,
-    params.target,
-    true,
-    params.difficulty,
-    params.stance
-  );
+  const isHighValue =
+    targetDef.isCapital || targetDef.isTown || targetDef.hasBridge === true;
+
+  let troopsSent: number;
+  let winChance: number;
+
+  if (params.difficulty === "hard") {
+    // Hard sizes the force against the projected defender using the exact
+    // combat modifiers; sizeHardAttack applies its own win-probability floors.
+    const sized = sizeHardAttack({
+      state: params.state,
+      source: params.source,
+      sourceDef,
+      target: params.target,
+      targetDef,
+      isSea: false,
+      isHighValue,
+    });
+    if (!sized) return null;
+    troopsSent = sized.troopsSent;
+    winChance = sized.winProbability;
+  } else {
+    troopsSent = computeTroopsToSend(
+      params.source,
+      params.target,
+      true,
+      params.difficulty,
+      params.stance
+    );
+    winChance = estimateWinChance(troopsSent, params.target.troops);
+
+    // Win-chance floors keep Normal from throwing coin-flip attacks at
+    // garbage targets, while still letting it gamble on capitals and towns
+    // where the prize is worth the risk.
+    const winFloor = isHighValue
+      ? 0.45
+      : params.difficulty === "easy"
+        ? 0.35
+        : 0.55;
+    if (winChance < winFloor) return null;
+  }
 
   const validation = validateLandAction({
     state: params.state,
@@ -414,20 +644,6 @@ function scoreLandAttack(params: {
     troopsSent,
   });
   if (!validation.valid) return null;
-
-  const winChance = estimateWinChance(troopsSent, params.target.troops);
-
-  // Win-chance floors keep Normal/Hard from throwing coin-flip attacks at
-  // garbage targets, while still letting them gamble on capitals and towns
-  // where the prize is worth the risk.
-  const isHighValue =
-    targetDef.isCapital || targetDef.isTown || targetDef.hasBridge;
-  const winFloor = isHighValue
-    ? 0.45
-    : params.difficulty === "easy"
-      ? 0.35
-      : 0.55;
-  if (winChance < winFloor) return null;
 
   const opponents = getOpponentIds(params.state, params.playerId);
   const targetOwnerIsEnemy = isEnemyOwner(opponents, params.target.owner);
@@ -486,6 +702,15 @@ function scoreLandAttack(params: {
 
   if (params.source.troops - troopsSent < 2) score -= 25;
 
+  if (params.difficulty === "hard") {
+    // Near-cap sources waste production — prefer to put their stacks to work.
+    if (isSourceNearCap(params.state, params.source)) {
+      score += AI.NEAR_CAP_SOURCE_BONUS;
+    }
+    // Retaking our own capital inside the escrow window recovers gold too.
+    score += getEscrowReclaimBonus(params.state, params.playerId, params.target.id);
+  }
+
   // Easy: occasional overvaluation of neutrals — keeps it from playing
   // perfectly even within its limited framework.
   if (
@@ -514,15 +739,23 @@ function scoreLandReinforce(params: {
   target: TileState;
   difficulty: Difficulty;
   threatByTile: Map<string, TileThreat>;
+  frontierDistances: Map<string, number>;
 }): CandidateAction | null {
   const targetDef = params.state.tileDefinitions[params.target.id];
   if (!targetDef) return null;
   if (params.target.owner !== params.playerId) return null;
 
+  const sourceFrontierDist = params.frontierDistances.get(params.source.id) ?? 0;
+  const targetFrontierDist = params.frontierDistances.get(params.target.id) ?? 0;
+  const movesTowardFrontier = targetFrontierDist < sourceFrontierDist;
+
   // Skip "interior" reinforcement — shuffling troops between two safe tiles
   // wastes a think slot. A tile is worth reinforcing only if it borders an
   // enemy (real combat) or neutrals (forward staging for expansion). Teammate
   // adjacencies don't count as "front line".
+  // Exception (Hard): pure logistics moves that funnel interior stacks
+  // strictly toward the frontier are allowed — rear production is useless
+  // sitting at its cap several hops from the fighting.
   const opponents = getOpponentIds(params.state, params.playerId);
   let touchesEnemy = false;
   let touchesNeutral = false;
@@ -532,7 +765,9 @@ function scoreLandReinforce(params: {
     if (isEnemyOwner(opponents, adj.owner)) touchesEnemy = true;
     else if (adj.owner === "neutral") touchesNeutral = true;
   }
-  if (!touchesEnemy && !touchesNeutral) return null;
+  if (!touchesEnemy && !touchesNeutral) {
+    if (params.difficulty !== "hard" || !movesTowardFrontier) return null;
+  }
 
   const troopsSent = computeTroopsToSend(
     params.source,
@@ -562,6 +797,32 @@ function scoreLandReinforce(params: {
     if (targetDef.isCapital) score += 80;
     else if (targetDef.isTown) score += 30;
     score += Math.min(40, threat.threatLevel - params.target.troops);
+  } else if (params.difficulty === "hard") {
+    // Hard logistics: troops flow strictly downhill toward the frontier
+    // (fixes interior stacks stalling on exposure plateaus), or laterally
+    // along the frontier toward a more exposed attacking position. Both
+    // rules are one-way, so no ping-pong.
+    const sourceExposure = getFrontlineExposure(
+      params.state,
+      params.source.id,
+      params.playerId
+    );
+    const targetExposure = getFrontlineExposure(
+      params.state,
+      params.target.id,
+      params.playerId
+    );
+    const lateralToHotterTile =
+      targetFrontierDist === sourceFrontierDist && targetExposure > sourceExposure;
+    if (!movesTowardFrontier && !lateralToHotterTile) return null;
+
+    if (movesTowardFrontier) {
+      // Bigger rear stacks are more worth mobilizing.
+      score += 6 + Math.min(AI.LOGISTICS_BONUS_MAX, params.source.troops * 0.4);
+    }
+    if (touchesEnemy) {
+      score += params.stance === "aggressive" ? 5 : 8;
+    }
   } else {
     // Pressure-reinforce (forward staging). The bug we're avoiding: two tiles
     // with the same frontline exposure each qualify as the other's
@@ -591,6 +852,11 @@ function scoreLandReinforce(params: {
   if (sourceThreat) {
     if (!threat) return null;
     if (sourceThreat.vulnerability >= threat.vulnerability) return null;
+  }
+
+  // Near-cap sources waste production — mobilizing them is worth extra.
+  if (params.difficulty === "hard" && isSourceNearCap(params.state, params.source)) {
+    score += AI.NEAR_CAP_SOURCE_BONUS;
   }
 
   return {
@@ -623,13 +889,42 @@ function scoreSeaAction(params: {
     params.difficulty === "easy" ? 7 : AI.MIN_TROOPS_TO_ATTACK_NORMAL;
   if (params.source.troops < minTroops) return null;
 
-  const troopsSent = computeTroopsToSend(
-    params.source,
-    params.target,
-    true,
-    params.difficulty,
-    params.stance
-  );
+  let troopsSent: number;
+  let winChance: number;
+
+  if (params.difficulty === "hard") {
+    const lane = findSeaLaneBetween(
+      params.state.seaLanes,
+      params.source.id,
+      params.target.id
+    );
+    if (!lane) return null;
+    // Sea sizing accounts for the amphibious defence bonus and the longer
+    // travel time (more defender production before the landing).
+    const sized = sizeHardAttack({
+      state: params.state,
+      source: params.source,
+      sourceDef,
+      target: params.target,
+      targetDef,
+      isSea: true,
+      seaLaneDistance: lane.distance,
+      isHighValue: targetDef.isCapital || targetDef.isTown || targetDef.hasBridge === true,
+    });
+    if (!sized) return null;
+    troopsSent = sized.troopsSent;
+    winChance = sized.winProbability;
+  } else {
+    troopsSent = computeTroopsToSend(
+      params.source,
+      params.target,
+      true,
+      params.difficulty,
+      params.stance
+    );
+    winChance = estimateWinChance(troopsSent, params.target.troops);
+    if (winChance < 0.5) return null;
+  }
 
   const validation = validateSeaAction({
     state: params.state,
@@ -639,9 +934,6 @@ function scoreSeaAction(params: {
     troopsSent,
   });
   if (!validation.valid) return null;
-
-  const winChance = estimateWinChance(troopsSent, params.target.troops);
-  if (winChance < 0.5) return null;
 
   let score = getTargetBaseValue(
     params.state,
@@ -665,7 +957,13 @@ function scoreSeaAction(params: {
   if (params.source.troops - troopsSent < 2) score -= 20;
 
   if (params.difficulty === "easy") score -= 30;
-  else if (params.difficulty === "hard") score += 15;
+  else if (params.difficulty === "hard") {
+    score += 15;
+    if (isSourceNearCap(params.state, params.source)) {
+      score += AI.NEAR_CAP_SOURCE_BONUS;
+    }
+    score += getEscrowReclaimBonus(params.state, params.playerId, params.target.id);
+  }
 
   return {
     sourceTileId: params.source.id,
@@ -721,8 +1019,24 @@ function findBestCombinedAttack(
 
     sourceCandidates.sort((a, b) => b.canCommit - a.canCommit);
 
+    // Size the combined force against the defender's EFFECTIVE power —
+    // terrain, forts, armour, and vets — not its raw troop count, so
+    // coordinated assaults on fortified mountains bring enough force.
+    const defenceEstimate = estimateCombatOutcome({
+      attackerTroops: Math.max(1, Math.floor(target.troops)),
+      defenderTroops: Math.floor(target.troops),
+      defenderTerrain: targetDef.terrain,
+      defenderIsCapital: targetDef.isCapital,
+      isSeaAttack: false,
+      attackerArmoured: false,
+      attackerAttackVetLevel: 0,
+      defenderArmoured: target.armoured,
+      defenderFortLevel: target.fortLevel,
+      defenderDefVetLevel: target.defVetLevel,
+    });
+    const effectiveDefenderTroops = defenceEstimate.defenderPower / COMBAT.INFANTRY_POWER;
     const need =
-      Math.ceil(target.troops * AI.ATTACK_TARGET_MULTIPLIER) + AI.ATTACK_CUSHION;
+      Math.ceil(effectiveDefenderTroops * 1.1) + AI.ATTACK_CUSHION;
 
     // Skip if the strongest single source can already handle it on its own —
     // a coordinated plan would just spread troops unnecessarily.
@@ -764,6 +1078,7 @@ function findCandidateActions(params: {
   difficulty: Difficulty;
   threatByTile: Map<string, TileThreat>;
   capitalDistances: Map<string, number>;
+  frontierDistances: Map<string, number>;
 }): CandidateAction[] {
   const candidates: CandidateAction[] = [];
   const opponents = getOpponentIds(params.state, params.playerId);
@@ -796,6 +1111,7 @@ function findCandidateActions(params: {
               target,
               difficulty: params.difficulty,
               threatByTile: params.threatByTile,
+              frontierDistances: params.frontierDistances,
             })
           : scoreLandAttack({
               state: params.state,
@@ -810,14 +1126,7 @@ function findCandidateActions(params: {
       if (candidate) candidates.push(candidate);
     }
 
-    for (const lane of params.state.seaLanes) {
-      const targetId =
-        lane.from === source.id
-          ? lane.to
-          : lane.bidirectional && lane.to === source.id
-            ? lane.from
-            : null;
-      if (!targetId) continue;
+    for (const targetId of getSeaNeighbors(params.state.seaLanes, source.id)) {
       const target = params.state.tiles[targetId];
       if (!target) continue;
       if (
@@ -871,11 +1180,20 @@ function runAIForPlayer(state: GameState, playerId: PlayerId): GameState {
   let nextState = state;
   const difficulty = nextState.ai.difficulty;
 
-  const nextStance = chooseAIStance(nextState, playerId, nextState.ai.stance);
-  if (nextStance !== nextState.ai.stance) {
+  // Each AI player keeps its own stance — a stance change by one player must
+  // not reset another's stance timer in 3–4 player modes.
+  const aiPlayer: AIPlayerState =
+    nextState.ai.byPlayer[playerId] ?? { stance: "balanced", stanceChangedAt: 0 };
+  let stance = aiPlayer.stance;
+
+  const nextStance = chooseAIStance(nextState, playerId, aiPlayer);
+  if (nextStance !== aiPlayer.stance) {
     nextState = cloneGameState(nextState);
-    nextState.ai.stance = nextStance;
-    nextState.ai.stanceChangedAt = nextState.now;
+    nextState.ai.byPlayer[playerId] = {
+      stance: nextStance,
+      stanceChangedAt: nextState.now,
+    };
+    stance = nextStance;
   }
 
   const maxActions = getMaxActionsPerThink(difficulty);
@@ -919,14 +1237,16 @@ function runAIForPlayer(state: GameState, playerId: PlayerId): GameState {
       nextState,
       playerId
     );
+    const frontierDistances = computeDistancesToFrontier(nextState, playerId);
 
     const allCandidates = findCandidateActions({
       state: nextState,
       playerId,
-      stance: nextState.ai.stance,
+      stance,
       difficulty,
       threatByTile,
       capitalDistances,
+      frontierDistances,
     });
 
     const candidates = allCandidates.filter(

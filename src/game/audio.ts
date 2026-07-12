@@ -54,9 +54,11 @@ function play(audio: HTMLAudioElement): void {
   if (muted || !SOUNDS_ENABLED) return;
   try {
     audio.currentTime = 0;
-    void audio.play();
+    // play() rejects asynchronously when the browser blocks autoplay before a
+    // user gesture — a try/catch can't see that, so swallow the rejection too.
+    audio.play().catch(() => {});
   } catch {
-    // Non-critical — browser may block before a user gesture.
+    // Non-critical — some browsers throw synchronously instead.
   }
 }
 
@@ -71,10 +73,27 @@ export function playVictory(): void { play(sfx.victory); }
 /** No defeat sample yet — intentionally silent. */
 export function playDefeat(): void  { /* no sample available — silent */ }
 
+/**
+ * Vibrates the device (mobile only; silently unsupported elsewhere). Follows
+ * the mute toggle so one switch controls all feedback. Patterns in ms.
+ */
+export function vibrate(pattern: number | number[]): void {
+  if (muted || !SOUNDS_ENABLED) return;
+  if (typeof navigator === "undefined" || !("vibrate" in navigator)) return;
+  try {
+    navigator.vibrate(pattern);
+  } catch {
+    // Some browsers throw before a user gesture — non-critical.
+  }
+}
+
 /** Starts the looping menu background track. No-op if already playing or muted. */
 export function startMenuMusic(): void {
   if (muted || !SOUNDS_ENABLED) return;
-  void menuTrack.play();
+  menuTrack.play().catch(() => {
+    // Autoplay blocked before the first user gesture — the music will start
+    // on the next explicit interaction instead.
+  });
 }
 
 /** Stops the menu track and rewinds it so the next call to startMenuMusic begins from the top. */

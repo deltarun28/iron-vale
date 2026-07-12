@@ -21,23 +21,23 @@ import {
   NEUTRAL_MAX_TROOPS,
   PRODUCTION_CAPS,
   TROOP_PRODUCTION_PER_SECOND,
-  VETERAN,
+  incrementFortLevel,
+  incrementVetLevel,
+  maxVetLevel,
+  reduceFortLevelOnCapture,
 } from "./constants";
 import {
-  IRON_VALE_TERRITORIES,
+  getTerritoriesForMap,
   getTerritoryBonus,
   getTerritoryController,
 } from "./territories";
 import { resolveCombat } from "./combat";
-import { handleTileCaptureEconomy, updateGoldProduction } from "./economy";
+import { applyGoldProduction, handleTileCaptureEconomy } from "./economy";
+import { canSeaAttackCaptureCapital } from "./movement";
 import {
-  canSeaAttackCaptureCapital,
-  calculateLandMoveTime,
-} from "./movement";
-import {
+  applyEscrowExpiry,
   checkWinCondition,
   cloneGameState,
-  expireEscrowTimers,
   getActivePlayerIds,
   isPlayer,
 } from "./state";
@@ -67,7 +67,8 @@ const NEUTRAL_FORTIFY_INTERVAL_SECONDS = 5;
 const NEUTRAL_FORTIFY_CHANCE = 0.20;
 
 // Capitals override the terrain production cap, so we need the right key.
-function getProductionCapKey(params: {
+// Exported for the hard AI's arrival-time projection (public information).
+export function getProductionCapKey(params: {
   terrain: TerrainType;
   isCapital: boolean;
 }): "plains" | "forest" | "mountain" | "capital" {
@@ -79,7 +80,8 @@ function getProductionCapKey(params: {
 }
 
 // Neutral tiles use slower rates than player-owned tiles of the same terrain.
-function getProductionRate(params: {
+// Exported for the hard AI's arrival-time projection (public information).
+export function getProductionRate(params: {
   terrain: TerrainType;
   isCapital: boolean;
   owner: OwnerId;
@@ -144,23 +146,23 @@ function applyDecay(troops: number, deltaSeconds: number, capKey: keyof typeof P
 // Advances troop production for every tile by deltaSeconds (the time elapsed
 // since the last tick, in seconds). Busy player tiles are skipped.
 // Neutral tiles continue producing regardless of busy state.
-export function updateTroopProduction(state: GameState, deltaSeconds: number): GameState {
-  const nextState = cloneGameState(state);
-  const difficultyMultiplier = nextState.ai.difficulty === "easy" ? EASY_PRODUCTION_MULTIPLIER : 1;
+// Mutates the draft in place — callers must own the state (see updateGame).
+function applyTroopProduction(draft: GameState, deltaSeconds: number): void {
+  const difficultyMultiplier = draft.ai.difficulty === "easy" ? EASY_PRODUCTION_MULTIPLIER : 1;
 
   // Compute the flat troops/s bonus each player earns from fully-controlled territories.
   // The bonus is added to every tile they own on top of normal terrain production.
   const territoryBonusPerPlayer: Partial<Record<PlayerId, number>> = {};
-  for (const territory of IRON_VALE_TERRITORIES) {
-    const controller = getTerritoryController(territory, nextState.tiles);
+  for (const territory of getTerritoriesForMap(draft.mapId)) {
+    const controller = getTerritoryController(territory, draft.tiles);
     if (controller !== null) {
       const bonus = getTerritoryBonus(territory);
       territoryBonusPerPlayer[controller] = (territoryBonusPerPlayer[controller] ?? 0) + bonus;
     }
   }
 
-  for (const tile of Object.values(nextState.tiles)) {
-    const definition = nextState.tileDefinitions[tile.id];
+  for (const tile of Object.values(draft.tiles)) {
+    const definition = draft.tileDefinitions[tile.id];
 
     if (!definition) {
       continue;
@@ -170,7 +172,7 @@ export function updateTroopProduction(state: GameState, deltaSeconds: number): G
     // Neutral tiles are not subject to busy-lock.
     const isBusy =
       tile.busyUntil !== null &&
-      tile.busyUntil > nextState.now &&
+      tile.busyUntil > draft.now &&
       tile.owner !== "neutral";
 
     if (isBusy) {
@@ -207,19 +209,19 @@ export function updateTroopProduction(state: GameState, deltaSeconds: number): G
     // Accumulate net production for player-owned tiles (decay can reduce troops,
     // so only count the positive delta to avoid deflating the stat on over-cap tiles).
     if (isPlayer(tile.owner) && nextTroops > prevTroops) {
-      const player = nextState.players[tile.owner];
+      const player = draft.players[tile.owner];
       if (player) player.totalTroopsProduced += nextTroops - prevTroops;
     }
   }
-
-  return nextState;
 }
 
-function resolveReinforceAction(state: GameState, action: ActiveAction): GameState {
-  const nextState = cloneGameState(state);
-  const target = nextState.tiles[action.targetTileId];
+// Mutates the draft in place — callers must own the state (see updateGame).
+// May return a successor state when the chain continues (createLandAction is
+// immutable and returns a fresh state).
+function resolveReinforceAction(draft: GameState, action: ActiveAction): GameState {
+  const target = draft.tiles[action.targetTileId];
 
-  if (!target) return nextState;
+  if (!target) return draft;
 
   // If there are more hops in a chained move, deposit troops then hand off to
   // continueChain, which re-applies the fraction and correctly dispatches the
@@ -228,20 +230,20 @@ function resolveReinforceAction(state: GameState, action: ActiveAction): GameSta
     if (!action.remainingPath[0]) {
       // Malformed path — deposit here as a safe fallback.
       target.troops += action.troopsSent;
-      return nextState;
+      return draft;
     }
 
     // Abort if this pass-through tile was captured — troops can't cross enemy territory.
-    if (target.owner !== action.owner) return nextState;
+    if (target.owner !== action.owner) return draft;
 
     target.troops += action.troopsSent;
-    return continueChain(nextState, action, action.targetTileId);
+    return continueChain(draft, action, action.targetTileId);
   }
 
   // If the tile was captured while troops were in transit, attack it instead
   // of reinforcing the enemy who now holds it.
   if (target.owner !== action.owner) {
-    return resolveAttackAction(state, { ...action, type: "land_attack" });
+    return resolveAttackAction(draft, { ...action, type: "land_attack" });
   }
 
   // Final destination — deposit troops normally.
@@ -252,10 +254,10 @@ function resolveReinforceAction(state: GameState, action: ActiveAction): GameSta
 
   // Veteran levels travel with troops. Take the highest level between incoming and existing,
   // since the more experienced soldiers set the standard for the combined garrison.
-  target.attackVetLevel = Math.max(target.attackVetLevel, action.attackerAttackVetLevel) as 0 | 1 | 2 | 3;
-  target.defVetLevel = Math.max(target.defVetLevel, action.attackerDefVetLevel) as 0 | 1 | 2 | 3;
+  target.attackVetLevel = maxVetLevel(target.attackVetLevel, action.attackerAttackVetLevel);
+  target.defVetLevel = maxVetLevel(target.defVetLevel, action.attackerDefVetLevel);
 
-  return nextState;
+  return draft;
 }
 
 // After a tile is taken or reinforced, continue a chained move to the next hop
@@ -286,8 +288,11 @@ function continueChain(state: GameState, action: ActiveAction, fromTileId: strin
   });
 }
 
-function resolveAttackAction(state: GameState, action: ActiveAction): GameState {
-  let nextState = cloneGameState(state);
+// Mutates the draft in place — callers must own the state (see updateGame).
+// Returns a successor state when capture economics run (those helpers are
+// immutable) or when a chained move continues.
+function resolveAttackAction(draft: GameState, action: ActiveAction): GameState {
+  let nextState = draft;
 
   const target = nextState.tiles[action.targetTileId];
   const targetDefinition = nextState.tileDefinitions[action.targetTileId];
@@ -324,10 +329,21 @@ function resolveAttackAction(state: GameState, action: ActiveAction): GameState 
     randomValue: Math.random(),
   });
 
+  // Record the combat so the renderer can play clash effects and show losses.
+  nextState.combatEvents.push({
+    time: nextState.now,
+    targetTileId: action.targetTileId,
+    attackerOwner: action.owner,
+    defenderOwner: previousOwner,
+    attackerWon: combat.attackerWon,
+    attackerLosses: attackerTroops - combat.attackerSurvivors,
+    defenderLosses: defenderTroops - combat.defenderSurvivors,
+  });
+
   if (!combat.attackerWon) {
     target.troops = combat.defenderSurvivors;
     // Surviving defenders earn one defence veteran level from holding off the attack.
-    target.defVetLevel = Math.min(VETERAN.MAX_LEVEL, target.defVetLevel + 1) as 0 | 1 | 2 | 3;
+    target.defVetLevel = incrementVetLevel(target.defVetLevel);
     return nextState;
   }
 
@@ -348,9 +364,9 @@ function resolveAttackAction(state: GameState, action: ActiveAction): GameState 
   target.owner = action.owner;
   target.troops = combat.attackerSurvivors;
   // Fort level drops by 2 on capture (minimum 0) — the attackers damage the walls.
-  target.fortLevel = Math.max(0, target.fortLevel - FORT.CAPTURE_LEVEL_REDUCTION) as 0 | 1 | 2 | 3 | 4 | 5;
+  target.fortLevel = reduceFortLevelOnCapture(target.fortLevel);
   target.armoured = action.attackerArmoured;
-  target.attackVetLevel = Math.min(VETERAN.MAX_LEVEL, action.attackerAttackVetLevel + 1) as 0 | 1 | 2 | 3;
+  target.attackVetLevel = incrementVetLevel(action.attackerAttackVetLevel);
   target.defVetLevel = action.attackerDefVetLevel;
 
   // handleTileCaptureEconomy runs escrow, gold freeze, and cap recalculations
@@ -366,20 +382,21 @@ function resolveAttackAction(state: GameState, action: ActiveAction): GameState 
 }
 
 // Finds all actions whose resolvesAt timestamp has passed, resolves them,
-// and returns the updated state.
-export function resolveCompletedActions(state: GameState): GameState {
-  let nextState = cloneGameState(state);
-
-  const completedActions = nextState.activeActions.filter(
-    (action) => action.resolvesAt <= nextState.now
+// and returns the updated state. Mutates the draft in place — callers must
+// own the state (see updateGame). No-op (and allocation-free apart from the
+// filter) on the common frame where nothing has completed.
+function applyCompletedActions(draft: GameState): GameState {
+  const completedActions = draft.activeActions.filter(
+    (action) => action.resolvesAt <= draft.now
   );
 
-  const pendingActions = nextState.activeActions.filter(
-    (action) => action.resolvesAt > nextState.now
+  if (completedActions.length === 0) return draft;
+
+  draft.activeActions = draft.activeActions.filter(
+    (action) => action.resolvesAt > draft.now
   );
 
-  nextState.activeActions = pendingActions;
-
+  let nextState = draft;
   for (const action of completedActions) {
     if (action.type === "land_reinforce" || action.type === "sea_move") {
       nextState = resolveReinforceAction(nextState, action);
@@ -392,34 +409,35 @@ export function resolveCompletedActions(state: GameState): GameState {
 }
 
 // Clears busy and embark cooldown timestamps that have expired this tick.
-export function cleanupExpiredBusyStates(state: GameState): GameState {
-  const nextState = cloneGameState(state);
-
-  for (const tile of Object.values(nextState.tiles)) {
-    if (tile.busyUntil !== null && tile.busyUntil <= nextState.now) {
+// Mutates the draft in place — callers must own the state (see updateGame).
+function applyExpiredBusyCleanup(draft: GameState): void {
+  for (const tile of Object.values(draft.tiles)) {
+    if (tile.busyUntil !== null && tile.busyUntil <= draft.now) {
       tile.busyUntil = null;
     }
 
     if (
       tile.embarkCooldownUntil !== null &&
-      tile.embarkCooldownUntil <= nextState.now
+      tile.embarkCooldownUntil <= draft.now
     ) {
       tile.embarkCooldownUntil = null;
     }
   }
-
-  return nextState;
 }
 
 // At-cap neutral tiles on Normal/Hard periodically attempt to reclaim weakly
 // defended adjacent player tiles. Each eligible neutral tile gets an independent
 // 10% chance every 3 seconds. Runs as an instant combat (no travel animation).
-function updateNeutralAggression(state: GameState): GameState {
-  if (state.ai.difficulty === "easy") return state;
+// Mutates the draft in place — callers must own the state (see updateGame).
+// Returns a successor state when a capture triggers the economy helpers.
+function applyNeutralAggression(draft: GameState): GameState {
+  if (draft.ai.difficulty === "easy") return draft;
 
-  if (state.now - state.lastNeutralAggressionAt < NEUTRAL_AGGRESSION_INTERVAL_SECONDS) {
-    return state;
+  if (draft.now - draft.lastNeutralAggressionAt < NEUTRAL_AGGRESSION_INTERVAL_SECONDS) {
+    return draft;
   }
+
+  draft.lastNeutralAggressionAt = draft.now;
 
   // Collect all invasions that trigger this cycle before applying any of them,
   // so that state changes from one invasion don't alter the rolls for another.
@@ -430,19 +448,17 @@ function updateNeutralAggression(state: GameState): GameState {
 
   const invasions: Invasion[] = [];
 
-  const snap = state; // read-only snapshot for the roll phase
-
-  for (const [tileId, tile] of Object.entries(snap.tiles)) {
+  for (const [tileId, tile] of Object.entries(draft.tiles)) {
     if (tile.owner !== "neutral") continue;
     if (tile.troops < NEUTRAL_MAX_TROOPS) continue;
 
-    const definition = snap.tileDefinitions[tileId];
+    const definition = draft.tileDefinitions[tileId];
     if (!definition) continue;
 
     if (Math.random() >= NEUTRAL_AGGRESSION_CHANCE) continue;
 
     const targets = definition.adjacent.filter((adjId) => {
-      const adjTile = snap.tiles[adjId];
+      const adjTile = draft.tiles[adjId];
       return (
         adjTile !== undefined &&
         adjTile.owner !== "neutral" &&
@@ -456,15 +472,9 @@ function updateNeutralAggression(state: GameState): GameState {
     if (targetId !== undefined) invasions.push({ sourceId: tileId, targetId });
   }
 
-  if (invasions.length === 0) {
-    // Still advance the timer so we don't re-roll immediately next tick.
-    const nextState = cloneGameState(state);
-    nextState.lastNeutralAggressionAt = state.now;
-    return nextState;
-  }
+  if (invasions.length === 0) return draft;
 
-  let nextState = cloneGameState(state);
-  nextState.lastNeutralAggressionAt = state.now;
+  let nextState = draft;
 
   for (const { sourceId, targetId } of invasions) {
     const sourceTile = nextState.tiles[sourceId];
@@ -496,11 +506,21 @@ function updateNeutralAggression(state: GameState): GameState {
 
     sourceTile.troops = Math.max(0, sourceTile.troops - troopsSent);
 
+    nextState.combatEvents.push({
+      time: nextState.now,
+      targetTileId: targetId,
+      attackerOwner: "neutral",
+      defenderOwner: previousOwner,
+      attackerWon: combat.attackerWon,
+      attackerLosses: troopsSent - combat.attackerSurvivors,
+      defenderLosses: Math.floor(targetTile.troops) - combat.defenderSurvivors,
+    });
+
     if (combat.attackerWon) {
       targetTile.owner = "neutral";
       targetTile.troops = combat.attackerSurvivors;
       targetTile.armoured = false;
-      targetTile.fortLevel = Math.max(0, targetTile.fortLevel - FORT.CAPTURE_LEVEL_REDUCTION) as 0 | 1 | 2 | 3 | 4 | 5;
+      targetTile.fortLevel = reduceFortLevelOnCapture(targetTile.fortLevel);
       nextState = handleTileCaptureEconomy({
         state: nextState,
         capturedTileId: targetId,
@@ -517,33 +537,36 @@ function updateNeutralAggression(state: GameState): GameState {
 
 // Neutral towns and bridges self-fortify over time, making them progressively
 // harder to capture the longer they go unchallenged.
-function updateNeutralFortification(state: GameState): GameState {
-  if (state.now - state.lastNeutralFortifyAt < NEUTRAL_FORTIFY_INTERVAL_SECONDS) {
-    return state;
+// Mutates the draft in place — callers must own the state (see updateGame).
+function applyNeutralFortification(draft: GameState): void {
+  if (draft.now - draft.lastNeutralFortifyAt < NEUTRAL_FORTIFY_INTERVAL_SECONDS) {
+    return;
   }
 
-  const nextState = cloneGameState(state);
-  nextState.lastNeutralFortifyAt = state.now;
+  draft.lastNeutralFortifyAt = draft.now;
 
-  for (const tile of Object.values(nextState.tiles)) {
+  for (const tile of Object.values(draft.tiles)) {
     if (tile.owner !== "neutral") continue;
     if (tile.fortLevel >= FORT.MAX_LEVEL) continue;
 
-    const definition = nextState.tileDefinitions[tile.id];
+    const definition = draft.tileDefinitions[tile.id];
     if (!definition) continue;
     if (!definition.isTown && !definition.hasBridge) continue;
 
     if (Math.random() < NEUTRAL_FORTIFY_CHANCE) {
-      tile.fortLevel = (tile.fortLevel + 1) as 0 | 1 | 2 | 3 | 4 | 5;
+      tile.fortLevel = incrementFortLevel(tile.fortLevel);
     }
   }
-
-  return nextState;
 }
 
 // The main update function, called once per animation frame.
 // deltaSeconds is how much real time has passed since the last frame.
 // Capping it at 0.05 (20fps minimum) prevents huge jumps if the tab was hidden.
+//
+// The state is cloned ONCE here; each subsystem below mutates that owned
+// draft in place rather than re-cloning (this runs at 60fps, so per-subsystem
+// clones were the main source of GC pressure). Subsystems that go through the
+// immutable capture-economy helpers return a successor state instead.
 export function updateGame(state: GameState, deltaSeconds: number): GameState {
   if (state.phase !== "playing") {
     return state;
@@ -554,22 +577,38 @@ export function updateGame(state: GameState, deltaSeconds: number): GameState {
 
   // Order matters: clean up old timers before checking production,
   // then resolve gold, then resolve completed actions, then check victory.
-  nextState = cleanupExpiredBusyStates(nextState);
-  nextState = updateTroopProduction(nextState, deltaSeconds);
-  nextState = updateGoldProduction(nextState, deltaSeconds);
-  nextState = expireEscrowTimers(nextState);
-  nextState = resolveCompletedActions(nextState);
-  nextState = updateNeutralAggression(nextState);
-  nextState = updateNeutralFortification(nextState);
+  applyExpiredBusyCleanup(nextState);
+  applyTroopProduction(nextState, deltaSeconds);
+  applyGoldProduction(nextState, deltaSeconds);
+  applyEscrowExpiry(nextState);
+  nextState = applyCompletedActions(nextState);
+  nextState = applyNeutralAggression(nextState);
+  applyNeutralFortification(nextState);
+
+  // Drop combat events once their render effects have long finished.
+  if (nextState.combatEvents.length > 0) {
+    nextState.combatEvents = nextState.combatEvents.filter(
+      (event) => nextState.now - event.time < 4
+    );
+  }
 
   // Update each player's peak tile count after all ownership changes this tick.
+  const tileCounts: Partial<Record<PlayerId, number>> = {};
   for (const playerId of getActivePlayerIds(nextState)) {
     const player = nextState.players[playerId];
     if (!player) continue;
     const currentTiles = Object.values(nextState.tiles).filter(
       (t) => t.owner === playerId
     ).length;
+    tileCounts[playerId] = currentTiles;
     if (currentTiles > player.peakTilesHeld) player.peakTilesHeld = currentTiles;
+  }
+
+  // Sample the match timeline every 5s of game time for the end-screen chart.
+  // The array is replaced, not mutated, so clones sharing it stay consistent.
+  const lastSample = nextState.timeline[nextState.timeline.length - 1];
+  if (!lastSample || nextState.now - lastSample.t >= 5) {
+    nextState.timeline = [...nextState.timeline, { t: nextState.now, tiles: tileCounts }];
   }
 
   nextState = checkWinCondition(nextState);

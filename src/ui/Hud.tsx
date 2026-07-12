@@ -10,11 +10,11 @@
  */
 
 import { useState } from "react";
-import { GOLD_PRODUCTION_PER_SECOND, TROOP_PRODUCTION_PER_SECOND } from "../game/constants";
+import { TROOP_PRODUCTION_PER_SECOND } from "../game/constants";
 import { isMuted, toggleMute } from "../game/audio";
-import { areAllies, getActivePlayerIds } from "../game/state";
+import { areAllies, getActivePlayerIds, isPlayer } from "../game/state";
 import { getTerritoriesForMap, getTerritoryBonus, getTerritoryController } from "../game/territories";
-import type { GameState, PlayerId } from "../game/types";
+import type { GameState, OwnerId, PlayerId } from "../game/types";
 
 function getTotalTiles(state: GameState): number {
   return Object.keys(state.tiles).length;
@@ -41,67 +41,50 @@ function formatGold(value: number): string {
   return Math.floor(value).toString();
 }
 
-/** Total floored troops across all tiles owned by a player. */
-function getTotalTroops(state: GameState, playerId: PlayerId): number {
-  return Math.floor(
-    Object.values(state.tiles)
-      .filter((t) => t.owner === playerId)
-      .reduce((sum, t) => sum + t.troops, 0)
-  );
+/** Per-owner tile/troop/production totals for the stat panels. */
+interface OwnerStats {
+  tiles: number;
+  troops: number;
+  /** Troops/s from terrain production; excludes territory bonuses. */
+  baseRate: number;
 }
 
-/** Number of tiles currently owned by a player. */
-function getTileCount(state: GameState, playerId: PlayerId): number {
-  return Object.values(state.tiles).filter((t) => t.owner === playerId).length;
-}
+// Builds every panel's numbers in one pass over the tiles instead of
+// re-filtering per stat per player — this runs every frame at game speed.
+function aggregateOwnerStats(state: GameState): Map<OwnerId, OwnerStats> {
+  const stats = new Map<OwnerId, OwnerStats>();
+  for (const tile of Object.values(state.tiles)) {
+    let entry = stats.get(tile.owner);
+    if (!entry) {
+      entry = { tiles: 0, troops: 0, baseRate: 0 };
+      stats.set(tile.owner, entry);
+    }
+    entry.tiles += 1;
+    entry.troops += tile.troops;
 
-/** Gold income rate per second from all capitals and towns a player owns. */
-function getGoldRate(state: GameState, playerId: PlayerId): number {
-  return Object.values(state.tiles)
-    .filter((t) => t.owner === playerId)
-    .reduce((sum, t) => {
-      const def = state.tileDefinitions[t.id];
-      if (!def) return sum;
-      if (def.isCapital) return sum + GOLD_PRODUCTION_PER_SECOND.capital;
-      if (def.isTown) return sum + GOLD_PRODUCTION_PER_SECOND.town;
-      return sum;
-    }, 0);
-}
-
-/** Total troop production rate per second across all owned tiles, including territory bonuses. */
-function getTroopRate(state: GameState, playerId: PlayerId): number {
-  const ownedTiles = Object.values(state.tiles).filter((t) => t.owner === playerId);
-
-  let rate = 0;
-  for (const tile of ownedTiles) {
     const def = state.tileDefinitions[tile.id];
-    if (!def) continue;
-    rate += def.isCapital
-      ? TROOP_PRODUCTION_PER_SECOND.capital
-      : TROOP_PRODUCTION_PER_SECOND[def.terrain];
-  }
-
-  // Territory bonus applies per owned tile for each controlled territory.
-  let bonusPerTile = 0;
-  for (const territory of getTerritoriesForMap(state.mapId)) {
-    if (getTerritoryController(territory, state.tiles) === playerId) {
-      bonusPerTile += getTerritoryBonus(territory);
+    if (def && isPlayer(tile.owner)) {
+      entry.baseRate += def.isCapital
+        ? TROOP_PRODUCTION_PER_SECOND.capital
+        : TROOP_PRODUCTION_PER_SECOND[def.terrain];
     }
   }
-  rate += bonusPerTile * ownedTiles.length;
-
-  return rate;
+  return stats;
 }
 
-/** Aggregate tile count and troop total for all neutral-owned tiles. */
-function getNeutralStats(state: GameState): { tiles: number; troops: number } {
-  const neutralTiles = Object.values(state.tiles).filter(
-    (t) => t.owner === "neutral"
-  );
-  return {
-    tiles: neutralTiles.length,
-    troops: Math.floor(neutralTiles.reduce((sum, t) => sum + t.troops, 0)),
-  };
+/** Flat territory bonus (troops/s per owned tile) each player currently earns. */
+function getTerritoryBonusPerTile(state: GameState): Map<PlayerId, number> {
+  const bonuses = new Map<PlayerId, number>();
+  for (const territory of getTerritoriesForMap(state.mapId)) {
+    const controller = getTerritoryController(territory, state.tiles);
+    if (controller !== null) {
+      bonuses.set(
+        controller,
+        (bonuses.get(controller) ?? 0) + getTerritoryBonus(territory)
+      );
+    }
+  }
+  return bonuses;
 }
 
 /**
@@ -159,7 +142,9 @@ export function Hud({
 }: HudProps) {
   const viewer = state.players[playerId];
   const escrowText = getEscrowText(state, playerId);
-  const neutral = getNeutralStats(state);
+  const ownerStats = aggregateOwnerStats(state);
+  const territoryBonuses = getTerritoryBonusPerTile(state);
+  const neutral = ownerStats.get("neutral") ?? { tiles: 0, troops: 0, baseRate: 0 };
 
   const [muted, setMuted] = useState(isMuted);
 
@@ -185,9 +170,11 @@ export function Hud({
         {orderedPlayerIds.map((pid) => {
           const player = state.players[pid];
           if (!player) return null;
-          const tiles = getTileCount(state, pid);
-          const troops = getTotalTroops(state, pid);
-          const troopRate = getTroopRate(state, pid);
+          const stats = ownerStats.get(pid) ?? { tiles: 0, troops: 0, baseRate: 0 };
+          const tiles = stats.tiles;
+          const troops = Math.floor(stats.troops);
+          // Territory bonus applies per owned tile for each controlled territory.
+          const troopRate = stats.baseRate + (territoryBonuses.get(pid) ?? 0) * stats.tiles;
           const label = getPanelLabel(state, playerId, pid);
           const teamModeShowChip = state.playerMode === "2v2";
           return (
@@ -214,22 +201,19 @@ export function Hud({
         <div className="hud__panel hud__panel--neutral">
           <div className="hud__label">Neutral</div>
           <div className="hud__value">{neutral.tiles} tiles</div>
-          <div className="hud__sub">Troops {neutral.troops}</div>
+          <div className="hud__sub">Troops {Math.floor(neutral.troops)}</div>
         </div>
       </div>
 
       {totalTiles > 0 && (
         <div className="hud__control-bar" aria-label="Territory control">
-          {orderedPlayerIds.map((pid) => {
-            const tiles = getTileCount(state, pid);
-            return (
-              <div
-                key={pid}
-                className={`hud__control-seg hud__control-seg--${pid}`}
-                style={{ flex: tiles }}
-              />
-            );
-          })}
+          {orderedPlayerIds.map((pid) => (
+            <div
+              key={pid}
+              className={`hud__control-seg hud__control-seg--${pid}`}
+              style={{ flex: ownerStats.get(pid)?.tiles ?? 0 }}
+            />
+          ))}
           <div
             className="hud__control-seg hud__control-seg--neutral"
             style={{ flex: neutral.tiles }}

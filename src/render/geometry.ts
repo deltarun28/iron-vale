@@ -257,23 +257,3 @@ export function getCanvasPointFromEvent(
     y: clientY - rect.top,
   };
 }
-
-// Calculates a HexLayout that fits the full map centred on the given canvas size.
-// minSize sets a floor on the tile radius so tiles stay tappable on small screens;
-// if the fitted size falls below minSize the map overflows and panning is needed.
-export function createLayoutForCanvas(params: {
-  canvasWidth: number;
-  canvasHeight: number;
-  minSize?: number;
-}): HexLayout {
-  const fitted = Math.min(params.canvasWidth / 9, params.canvasHeight / 6);
-  const size = params.minSize !== undefined ? Math.max(params.minSize, fitted) : fitted;
-
-  return {
-    size,
-    origin: {
-      x: params.canvasWidth / 2 + size * 0.4,
-      y: params.canvasHeight / 2 - size * 0.2,
-    },
-  };
-}

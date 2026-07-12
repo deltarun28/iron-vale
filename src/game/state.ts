@@ -17,21 +17,13 @@ import {
   STARTING_GOLD,
   STARTING_POSITIONS,
 } from "./constants";
-import {
-  BORDERLANDS_STARTING_TILES,
-  borderlandsSeaLanes,
-  getBorderlandsTileDefinitions,
-} from "./borderlandsMap";
-import {
-  IRON_VALE_STARTING_TILES,
-  getIronValeTileDefinitions,
-  ironValeSeaLanes,
-  type StartingTileSpec,
-} from "./ironValeMap";
+import { getMapConfig, type StartingTileSpec } from "./maps";
 import type {
+  AIState,
   Difficulty,
   GameState,
   MapId,
+  MapTheme,
   OwnerId,
   PlayerId,
   PlayerMode,
@@ -173,6 +165,9 @@ export function createInitialPlayerState(
     peakTilesHeld: capitalsHeld, // starts with one capital tile
     totalTroopsProduced: 0,
     totalGoldEarned: 0,
+    tilesLost: 0,
+    capitalsLost: 0,
+    escrowReclaimed: false,
   };
 }
 
@@ -216,16 +211,13 @@ function assignStartingTiles(
 export function createInitialGameState(
   difficulty: Difficulty = "normal",
   playerMode: PlayerMode = "1v1",
-  mapId: MapId = "river_crown"
+  mapId: MapId = "river_crown",
+  mapTheme: MapTheme = "default"
 ): GameState {
-  const isSmall = mapId !== "borderlands";
-  const tileDefinitions = isSmall
-    ? getIronValeTileDefinitions()
-    : getBorderlandsTileDefinitions();
-  const seaLanes = isSmall ? ironValeSeaLanes : borderlandsSeaLanes;
-  const startingTilePool: readonly StartingTileSpec[] = isSmall
-    ? IRON_VALE_STARTING_TILES
-    : BORDERLANDS_STARTING_TILES;
+  const mapConfig = getMapConfig(mapId);
+  const tileDefinitions = mapConfig.getTileDefinitions();
+  const seaLanes = mapConfig.seaLanes;
+  const startingTilePool: readonly StartingTileSpec[] = mapConfig.startingTiles;
 
   const tiles: Record<string, TileState> = Object.fromEntries(
     Object.values(tileDefinitions).map((definition) => [
@@ -257,10 +249,12 @@ export function createInitialGameState(
   }
 
   const startingTiles = assignStartingTiles(startingTilePool, drawOrder);
+  const capitalTileIds: string[] = [];
   for (const [playerId, tileId] of startingTiles) {
     const baseDef = tileDefinitions[tileId];
     const baseTile = tiles[tileId];
     if (!baseDef || !baseTile) continue;
+    capitalTileIds.push(tileId);
     tileDefinitions[tileId] = {
       ...baseDef,
       isCapital: true,
@@ -301,23 +295,33 @@ export function createInitialGameState(
     players[playerId] = createInitialPlayerState(playerId, teamId, capitals);
   }
 
+  // Every AI slot (all non-human players) gets its own stance state.
+  const aiByPlayer: AIState["byPlayer"] = {};
+  for (const playerId of activePlayerIds) {
+    if (playerId === "player1") continue;
+    aiByPlayer[playerId] = { stance: "balanced", stanceChangedAt: 0 };
+  }
+
   return {
     phase: "preview",
     winningTeam: null,
     playerMode,
     mapId,
+    mapTheme,
+    capitalTileIds,
     now: 0,
     tiles,
     tileDefinitions,
     seaLanes,
     players,
     activeActions: [],
+    combatEvents: [],
+    timeline: [],
     ai: {
       difficulty,
-      stance: "balanced",
       lastThinkAt: 0,
       nextThinkAt: 1, // give the AI a one-second head start before its first think
-      stanceChangedAt: 0,
+      byPlayer: aiByPlayer,
     },
     lastNeutralAggressionAt: 0,
     lastNeutralFortifyAt: 0,
@@ -389,58 +393,66 @@ export function handleCapitalReclaimEscrow(
   player.escrowGold = 0;
   player.escrowCapitalId = null;
   player.escrowExpiresAt = null;
+  player.escrowReclaimed = true; // fuels the Treasurer achievement
 
   return nextState;
 }
 
-// Runs every tick to clear any escrow that the player failed to reclaim in time.
-export function expireEscrowTimers(state: GameState): GameState {
-  const nextState = cloneGameState(state);
-
-  for (const playerId of getActivePlayerIds(nextState)) {
-    const player = nextState.players[playerId];
+// Clears any escrow that the player failed to reclaim in time. Mutates the
+// draft in place — callers must own the state (see updateGame's single-clone
+// tick). Use expireEscrowTimers for an immutable version.
+export function applyEscrowExpiry(draft: GameState): void {
+  for (const playerId of getActivePlayerIds(draft)) {
+    const player = draft.players[playerId];
     if (!player) continue;
 
     if (
       player.escrowExpiresAt !== null &&
-      player.escrowExpiresAt <= nextState.now
+      player.escrowExpiresAt <= draft.now
     ) {
       player.escrowGold = 0;
       player.escrowCapitalId = null;
       player.escrowExpiresAt = null;
     }
   }
+}
 
+/** Immutable wrapper around applyEscrowExpiry. */
+export function expireEscrowTimers(state: GameState): GameState {
+  const nextState = cloneGameState(state);
+  applyEscrowExpiry(nextState);
   return nextState;
 }
 
 // A team is "alive" if any of its players still owns at least one tile. The
 // match ends as soon as only one team is alive. Works the same way for 1v1
 // (where each team has one player) and 2v2 (two players per team).
+// Returns the input state unchanged while the game continues — the check runs
+// every tick, so the common path must not allocate a clone.
 export function checkWinCondition(state: GameState): GameState {
   if (state.phase === "ended") return state;
 
-  const nextState = cloneGameState(state);
   const teamsAlive = new Set<TeamId>();
 
-  for (const playerId of getActivePlayerIds(nextState)) {
-    const player = nextState.players[playerId];
+  for (const playerId of getActivePlayerIds(state)) {
+    const player = state.players[playerId];
     if (!player) continue;
-    const ownsAnyTile = Object.values(nextState.tiles).some(
+    const ownsAnyTile = Object.values(state.tiles).some(
       (tile) => tile.owner === playerId
     );
-    const hasTroopsInFlight = nextState.activeActions.some(
+    const hasTroopsInFlight = state.activeActions.some(
       (action) => action.owner === playerId
     );
     if (ownsAnyTile || hasTroopsInFlight) teamsAlive.add(player.teamId);
   }
 
-  if (teamsAlive.size <= 1) {
-    nextState.phase = "ended";
-    nextState.winningTeam = teamsAlive.size === 1
-      ? Array.from(teamsAlive)[0]!
-      : null;
-  }
+  if (teamsAlive.size > 1) return state;
+
+  const nextState = cloneGameState(state);
+  nextState.phase = "ended";
+  nextState.winningTeam = teamsAlive.size === 1
+    ? Array.from(teamsAlive)[0]!
+    : null;
 
   return nextState;
 }
@@ -456,6 +468,12 @@ export function cloneGameState(state: GameState): GameState {
     if (player) players[id] = { ...player };
   }
 
+  const aiByPlayer: AIState["byPlayer"] = {};
+  for (const id of ALL_PLAYER_IDS) {
+    const aiPlayer = state.ai.byPlayer[id];
+    if (aiPlayer) aiByPlayer[id] = { ...aiPlayer };
+  }
+
   return {
     ...state,
     tiles: Object.fromEntries(
@@ -463,6 +481,9 @@ export function cloneGameState(state: GameState): GameState {
     ),
     players,
     activeActions: state.activeActions.map((action) => ({ ...action })),
-    ai: { ...state.ai },
+    // Events are immutable once created; copy the array so the draft can push.
+    // timeline is NOT copied: it is replaced (never mutated) on append.
+    combatEvents: state.combatEvents.slice(),
+    ai: { ...state.ai, byPlayer: aiByPlayer },
   };
 }

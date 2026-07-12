@@ -19,11 +19,12 @@
  */
 
 import { asset } from "../assets";
+import { forecastAttack } from "../game/forecast";
 import { calculateSeaCost, findSeaLaneBetween } from "../game/movement";
 import { PRODUCTION_CAPS } from "../game/constants";
 import type { TerritoryDefinition } from "../game/territories";
 import { getTerritoryController } from "../game/territories";
-import type { GameState, MapTheme, OwnerId, TerrainType } from "../game/types";
+import type { AxialCoord, GameState, MapId, MapTheme, OwnerId } from "../game/types";
 import {
   axialToPixel,
   drawHexPath,
@@ -57,31 +58,34 @@ interface MapImageConfig {
   scaleX: number;
 }
 
-// Iron Vale (1643×957, q=0 = east_plains which sits right of centre).
-const IRON_VALE_MAP_CONFIG: MapImageConfig = {
-  images: {
-    default: Object.assign(new Image(), { src: asset("map.png") }),
-    winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
-    autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
+// Image configs stay here (not in game/maps.ts) because HTMLImageElement
+// doesn't exist in the headless simulator environment.
+const MAP_IMAGE_CONFIGS: Record<MapId, MapImageConfig> = {
+  // Iron Vale (1643×957, q=0 = east_plains which sits right of centre).
+  river_crown: {
+    images: {
+      default: Object.assign(new Image(), { src: asset("map.png") }),
+      winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
+      autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
+    },
+    hexSize: 149,
+    originX: 1038,
+    originY: 448,
+    scaleX:  1.17,
   },
-  hexSize: 149,
-  originX: 1038,
-  originY: 448,
-  scaleX:  1.17,
-};
-
-// Borderlands (600×600, q=0,r=0 = center_plains which is the image centre).
-// These calibration values are initial estimates — tweak if the hex grid drifts.
-const BORDERLANDS_MAP_CONFIG: MapImageConfig = {
-  images: {
-    default: Object.assign(new Image(), { src: asset("borderlands.png") }),
-    winter:  Object.assign(new Image(), { src: asset("borderlands-winter.png") }),
-    autumn:  Object.assign(new Image(), { src: asset("borderlands-autumn.png") }),
+  // Borderlands (600×600, q=0,r=0 = center_plains which is the image centre).
+  // These calibration values are initial estimates — tweak if the hex grid drifts.
+  borderlands: {
+    images: {
+      default: Object.assign(new Image(), { src: asset("borderlands.png") }),
+      winter:  Object.assign(new Image(), { src: asset("borderlands-winter.png") }),
+      autumn:  Object.assign(new Image(), { src: asset("borderlands-autumn.png") }),
+    },
+    hexSize: 107,
+    originX: 714,
+    originY: 600,
+    scaleX:  1.00,
   },
-  hexSize: 107,
-  originX: 714,
-  originY: 600,
-  scaleX:  1.00,
 };
 
 // The options passed in from GameScreen telling the renderer what the player
@@ -91,6 +95,17 @@ export interface FloatingNotification {
   text: string;
   tileId: string;
   createdAt: number; // game time
+  /** Text colour; defaults to white. Casualty numbers use the loser's colour. */
+  color?: string;
+  /** Horizontal offset as a fraction of tile size, so two numbers can share a tile. */
+  offsetX?: number;
+}
+
+/** A short-lived battle impact effect on the target tile. */
+export interface ClashEffect {
+  tileId: string;
+  time: number; // game time the combat resolved
+  attackerWon: boolean;
 }
 
 export interface TerritoryFlash {
@@ -102,6 +117,9 @@ export interface TerritoryFlash {
 export interface RenderOptions {
   selectedTileId: string | null;
   validTargetIds: string[];
+  // Prebuilt tileId → axial coord lookup (static per game). Supplied by the
+  // caller so hit-testing inside the renderer doesn't rebuild it every frame.
+  tileCoords: Record<string, AxialCoord>;
   dragPoint?: Point | null;
   // Full ordered list of player-owned tiles visited during the current drag.
   // When length >= 2, the drag line threads through each tile's centre rather
@@ -112,6 +130,8 @@ export interface RenderOptions {
   // Maps tileId → game-time of capture; drives the brief flash ring on ownership changes.
   captureFlashes?: Map<string, number>;
   notifications?: FloatingNotification[];
+  // Battle impact effects keyed by `${tileId}:${time}`.
+  clashes?: Map<string, ClashEffect>;
   // Maps territoryId → flash data; drives the pulsing boundary on territory capture.
   territoryFlashes?: Map<string, TerritoryFlash>;
   // Territory definitions for the current map — used for border and flash rendering.
@@ -119,8 +139,9 @@ export interface RenderOptions {
 }
 
 // Player palette — vivid, saturated tones that punch through the parchment map.
-// Stroke and fill use the same hue per player.
-function getOwnerStroke(owner: OwnerId): string {
+// Stroke and fill use the same hue per player. Exported so the UI layer can
+// colour casualty numbers and other per-owner accents consistently.
+export function getOwnerStroke(owner: OwnerId): string {
   switch (owner) {
     case "player1":
       return "#2E7EC8";
@@ -192,6 +213,8 @@ function drawHexTile(params: {
   selected: boolean;
   validTarget: boolean;
   underAttack: boolean;
+  /** Seconds since this tile last changed owner, if recent. Drives the pop. */
+  captureAge?: number;
 }): void {
   const { ctx, state, tileId, layout, selected, validTarget, underAttack } = params;
   const definition = state.tileDefinitions[tileId];
@@ -229,7 +252,14 @@ function drawHexTile(params: {
     drawTownMarker(ctx, polygon.center, tile.owner);
   }
 
-  drawTroopMarker(ctx, polygon.center, tile.owner, tile.troops, tile.armoured);
+  // Capture pop: the marker briefly scales up when the tile changes hands.
+  const POP_DURATION = 0.35;
+  const popScale =
+    params.captureAge !== undefined && params.captureAge < POP_DURATION
+      ? 1 + 0.3 * Math.sin((params.captureAge / POP_DURATION) * Math.PI)
+      : 1;
+
+  drawTroopMarker(ctx, polygon.center, tile.owner, tile.troops, tile.armoured, popScale);
 
   if (tile.fortLevel > 0) drawFortIcon(ctx, polygon.center, layout.size, tile.fortLevel);
   if (tile.attackVetLevel > 0) drawAttackVetIcon(ctx, polygon.center, layout.size, tile.attackVetLevel);
@@ -242,74 +272,6 @@ function drawHexTile(params: {
   if (tile.busyUntil !== null && tile.busyUntil > state.now) {
     drawBusyRing(ctx, polygon.center, layout.size, tile.busyUntil - state.now);
   }
-}
-
-// Draws simple terrain detail shapes inside each hex.
-// ctx.save() before and ctx.restore() after means any style changes made
-// inside this function (fillStyle, lineWidth etc.) don't leak out.
-/**
- * Draws simple decorative terrain shapes inside a hex (trees, peaks, grass lines).
- * These are canvas-drawn overlays that supplement the PNG map art — only visible
- * if the PNG isn't loaded or during development without the asset.
- */
-function drawTerrainDetails(
-  ctx: CanvasRenderingContext2D,
-  center: Point,
-  size: number,
-  terrain: TerrainType
-): void {
-  ctx.save();
-
-  if (terrain === "forest") {
-    ctx.fillStyle = "rgba(20, 70, 35, 0.85)";
-
-    for (let i = 0; i < 5; i += 1) {
-      const x = center.x + (i - 2) * size * 0.18;
-      const y = center.y - size * 0.18 + (i % 2) * size * 0.16;
-
-      ctx.beginPath();
-      ctx.moveTo(x, y - size * 0.18);
-      ctx.lineTo(x - size * 0.12, y + size * 0.12);
-      ctx.lineTo(x + size * 0.12, y + size * 0.12);
-      ctx.closePath();
-      ctx.fill();
-    }
-  }
-
-  if (terrain === "mountain") {
-    ctx.fillStyle = "rgba(80, 80, 85, 0.9)";
-
-    ctx.beginPath();
-    ctx.moveTo(center.x - size * 0.35, center.y + size * 0.18);
-    ctx.lineTo(center.x - size * 0.08, center.y - size * 0.32);
-    ctx.lineTo(center.x + size * 0.12, center.y + size * 0.18);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(center.x, center.y + size * 0.2);
-    ctx.lineTo(center.x + size * 0.25, center.y - size * 0.28);
-    ctx.lineTo(center.x + size * 0.42, center.y + size * 0.2);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  if (terrain === "plains") {
-    ctx.strokeStyle = "rgba(120, 92, 35, 0.35)";
-    ctx.lineWidth = 2;
-
-    ctx.beginPath();
-    ctx.moveTo(center.x - size * 0.35, center.y - size * 0.1);
-    ctx.quadraticCurveTo(center.x, center.y - size * 0.25, center.x + size * 0.35, center.y - size * 0.05);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(center.x - size * 0.3, center.y + size * 0.12);
-    ctx.quadraticCurveTo(center.x, center.y + size * 0.02, center.x + size * 0.28, center.y + size * 0.15);
-    ctx.stroke();
-  }
-
-  ctx.restore();
 }
 
 // Shield with level number at the top-left of the hex interior.
@@ -428,7 +390,6 @@ function drawBridgeMarker(ctx: CanvasRenderingContext2D, center: Point, size: nu
   ctx.restore();
 }
 
-/** Draws a filled circle labelled "C" in the owner's colour above the troop marker. */
 /** Draws a filled circle labelled "T" in the owner's colour above the troop marker. */
 function drawTownMarker(ctx: CanvasRenderingContext2D, center: Point, owner: OwnerId): void {
   ctx.save();
@@ -481,13 +442,14 @@ function drawTroopMarker(
   center: Point,
   owner: OwnerId,
   troops: number,
-  armoured = false
+  armoured = false,
+  scale = 1
 ): void {
   ctx.save();
 
   const cx = center.x;
   const cy = center.y + 10;
-  const r  = 36;
+  const r  = 36 * scale;
 
   ctx.fillStyle = getOwnerFill(owner);
   ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
@@ -641,37 +603,6 @@ function drawOwnershipTint(
   ctx.restore();
 }
 
-function drawTileLabel(
-  ctx: CanvasRenderingContext2D,
-  center: Point,
-  label: string,
-  size: number
-): void {
-  ctx.save();
-
-  ctx.fillStyle = "rgba(255, 248, 225, 0.9)";
-  ctx.strokeStyle = "rgba(80, 55, 30, 0.45)";
-  ctx.lineWidth = 1;
-
-  const width = Math.min(size * 1.35, Math.max(70, label.length * 5.5));
-  const height = 16;
-  const x = center.x - width / 2;
-  const y = center.y + size * 0.48;
-
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, 6);
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = "#3c2d1f";
-  ctx.font = "10px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(label, center.x, y + height / 2);
-
-  ctx.restore();
-}
-
 // Returns the three control points of the quadratic Bézier used to draw a sea
 // route between two tile centres. The arc bows downward into the sea area.
 // Every function that draws sea movement (lanes, active actions, drag line)
@@ -806,6 +737,30 @@ function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layo
 
     ctx.setLineDash([]);
 
+    // Dust trail: a few fading puffs behind the moving marker make the march
+    // feel physical. Positions trail the marker along the same route.
+    const trail: { alpha: number; radius: number; back: number }[] = [
+      { alpha: 0.25, radius: 6, back: 0.035 },
+      { alpha: 0.15, radius: 4.5, back: 0.07 },
+      { alpha: 0.08, radius: 3, back: 0.105 },
+    ];
+    ctx.fillStyle = "rgba(214, 196, 158, 1)";
+    const trailArc = action.isSeaAction ? getSeaArcBezier(source, target, layout.size) : null;
+    for (const puff of trail) {
+      const tp = progress - puff.back;
+      if (tp <= 0.02) continue;
+      const pos = trailArc
+        ? bezierPoint(trailArc.start, trailArc.control, trailArc.end, tp)
+        : {
+            x: source.x + (target.x - source.x) * tp,
+            y: source.y + (target.y - source.y) * tp,
+          };
+      ctx.globalAlpha = puff.alpha;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, puff.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // Arrowhead at the destination end (only draw on land attacks for clarity)
     if (isAttack && !action.isSeaAction) {
       const angle = Math.atan2(target.y - source.y, target.x - source.x);
@@ -846,6 +801,70 @@ function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layo
   ctx.restore();
 }
 
+// A small parchment pill with a short label, used for drag-time info
+// (sea cost, win odds). Centred on the given point.
+function drawInfoBadge(
+  ctx: CanvasRenderingContext2D,
+  center: Point,
+  label: string,
+  textColor: string
+): void {
+  ctx.save();
+  ctx.font = "bold 12px sans-serif";
+  const textW = ctx.measureText(label).width;
+  const pad = 9;
+  const bw = textW + pad * 2;
+  const bh = 21;
+
+  ctx.fillStyle = "rgba(255, 248, 225, 0.96)";
+  ctx.strokeStyle = "rgba(70, 50, 30, 0.5)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(center.x - bw / 2, center.y - bh / 2, bw, bh, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, center.x, center.y);
+  ctx.restore();
+}
+
+// Draws the estimated win-chance badge above an enemy/neutral drag target.
+// The forecast is the exact one the hard AI plans with (real combat modifiers
+// plus defender growth to arrival) — showing it teaches the combat system.
+function drawAttackOddsBadge(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  options: RenderOptions,
+  targetTileId: string
+): void {
+  const sourceId = options.selectedTileId;
+  if (!sourceId) return;
+  const sourceTile = state.tiles[sourceId];
+  const targetTile = state.tiles[targetTileId];
+  const targetDef = state.tileDefinitions[targetTileId];
+  if (!sourceTile || !targetTile || !targetDef) return;
+  if (targetTile.owner === sourceTile.owner) return; // reinforce — no odds
+
+  const fraction = options.sendFraction ?? 0.5;
+  const troopsSent = Math.max(1, Math.floor(sourceTile.troops * fraction));
+  const forecast = forecastAttack({ state, sourceTileId: sourceId, targetTileId, troopsSent });
+  if (!forecast) return;
+
+  const pct = Math.round(forecast.winProbability * 100);
+  const color = pct >= 70 ? "#1d7a3a" : pct >= 45 ? "#a06a10" : "#a82525";
+  const center = axialToPixel(targetDef.coord, layout);
+  drawInfoBadge(
+    ctx,
+    { x: center.x, y: center.y - layout.size * 0.82 },
+    `${pct}% win`,
+    color
+  );
+}
+
 // Draws the drag line from the source tile toward the player's finger/cursor.
 // For sea-lane targets the line snaps to the same Bézier arc used by the sea
 // lane visual; for land targets it stays a straight line to the cursor.
@@ -867,10 +886,11 @@ function drawDragLine(
   const sourceCenter = axialToPixel(sourceDefinition.coord, layout);
   const cursorPoint = options.dragPoint;
 
-  const tileCoords = Object.fromEntries(
-    Object.values(state.tileDefinitions).map((def) => [def.id, def.coord])
-  );
-  const hoveredTileId = getTileIdAtPoint({ point: cursorPoint, layout, tileCoords });
+  const hoveredTileId = getTileIdAtPoint({
+    point: cursorPoint,
+    layout,
+    tileCoords: options.tileCoords,
+  });
   const overValidTarget =
     hoveredTileId !== null && options.validTargetIds.includes(hoveredTileId);
 
@@ -951,9 +971,20 @@ function drawDragLine(
         ctx.textBaseline = "middle";
         ctx.fillText(label, mid.x, mid.y);
       }
+
+      // Win odds for sea attacks, above the target tile.
+      drawAttackOddsBadge(ctx, state, layout, options, hoveredTileId);
     }
   } else {
-    // Land drag: line from source through any intermediate path tiles to cursor.
+    // Land drag: line from source through any intermediate path tiles to the
+    // cursor — or, when hovering a valid target, snapped to that tile's centre
+    // so the drop feels magnetic and certain.
+    const snappedTarget =
+      overValidTarget && hoveredTileId ? state.tileDefinitions[hoveredTileId] : null;
+    const endPoint = snappedTarget
+      ? axialToPixel(snappedTarget.coord, layout)
+      : cursorPoint;
+
     ctx.beginPath();
     ctx.moveTo(sourceCenter.x, sourceCenter.y);
 
@@ -970,14 +1001,29 @@ function drawDragLine(
       }
     }
 
-    ctx.lineTo(cursorPoint.x, cursorPoint.y);
+    ctx.lineTo(endPoint.x, endPoint.y);
     ctx.stroke();
 
     ctx.setLineDash([]);
     ctx.fillStyle = dotColor;
     ctx.beginPath();
-    ctx.arc(cursorPoint.x, cursorPoint.y, 6, 0, Math.PI * 2);
+    ctx.arc(endPoint.x, endPoint.y, 6, 0, Math.PI * 2);
     ctx.fill();
+
+    if (snappedTarget && hoveredTileId) {
+      // Pulsing ring on the hovered target confirms where the drop will land.
+      const pulse = 0.55 + 0.3 * Math.sin(state.now * 6);
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(endPoint.x, endPoint.y + 10, 44, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // Win odds for land attacks, above the target tile.
+      drawAttackOddsBadge(ctx, state, layout, options, hoveredTileId);
+    }
   }
 
   ctx.restore();
@@ -1006,6 +1052,7 @@ function drawNotifications(
     const progress = age / NOTIFICATION_DURATION;
     const alpha = Math.max(0, 1 - progress * progress); // quadratic fade
     const riseY = center.y - layout.size * 0.9 - progress * layout.size * 0.8;
+    const x = center.x + (n.offsetX ?? 0) * layout.size;
 
     ctx.globalAlpha = alpha;
     ctx.font = `bold ${Math.max(12, layout.size * 0.22)}px sans-serif`;
@@ -1016,10 +1063,70 @@ function drawNotifications(
     ctx.strokeStyle = "rgba(0,0,0,0.6)";
     ctx.lineWidth = 3;
     ctx.lineJoin = "round";
-    ctx.strokeText(n.text, center.x, riseY);
+    ctx.strokeText(n.text, x, riseY);
 
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(n.text, center.x, riseY);
+    ctx.fillStyle = n.color ?? "#ffffff";
+    ctx.fillText(n.text, x, riseY);
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// The clash effect lasts this long (game seconds).
+const CLASH_DURATION = 0.6;
+
+/**
+ * Draws battle impact effects: an expanding shockwave ring plus radiating
+ * spark lines on the tile where a combat just resolved. This is the visual
+ * payoff for the moment the whole game builds toward — without it, battles
+ * resolve silently and numbers just snap.
+ */
+function drawClashes(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  clashes: Map<string, ClashEffect>
+): void {
+  ctx.save();
+
+  for (const clash of clashes.values()) {
+    const age = state.now - clash.time;
+    if (age < 0 || age >= CLASH_DURATION) continue;
+
+    const definition = state.tileDefinitions[clash.tileId];
+    if (!definition) continue;
+
+    const center = axialToPixel(definition.coord, layout);
+    const t = age / CLASH_DURATION;
+    const fade = (1 - t) * (1 - t);
+
+    // Expanding shockwave ring.
+    const ringRadius = layout.size * (0.2 + t * 0.75);
+    ctx.globalAlpha = fade * 0.9;
+    ctx.strokeStyle = clash.attackerWon ? "#ffd23f" : "#f0f0f0";
+    ctx.lineWidth = Math.max(2, layout.size * 0.06 * (1 - t));
+    ctx.beginPath();
+    ctx.arc(center.x, center.y + 10, ringRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Radiating sparks — angles derived from the tile id so they're stable
+    // across frames without storing per-spark state.
+    let seed = 0;
+    for (let i = 0; i < clash.tileId.length; i += 1) seed = (seed * 31 + clash.tileId.charCodeAt(i)) | 0;
+    ctx.strokeStyle = "#ff9d3f";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.globalAlpha = fade;
+    for (let i = 0; i < 6; i += 1) {
+      const angle = ((seed + i * 977) % 628) / 100; // pseudo-random, stable
+      const inner = layout.size * (0.25 + t * 0.55);
+      const outer = inner + layout.size * 0.14 * (1 - t);
+      ctx.beginPath();
+      ctx.moveTo(center.x + Math.cos(angle) * inner, center.y + 10 + Math.sin(angle) * inner);
+      ctx.lineTo(center.x + Math.cos(angle) * outer, center.y + 10 + Math.sin(angle) * outer);
+      ctx.stroke();
+    }
   }
 
   ctx.globalAlpha = 1;
@@ -1072,12 +1179,20 @@ function drawCaptureFlashes(
   ctx.restore();
 }
 
-// Builds a Map from "q,r" coord key → tileId for all tiles in tileDefinitions.
-// Used by boundary-drawing routines to check whether a neighbor is in a set.
-function buildCoordToTileId(state: GameState): Map<string, string> {
-  const map = new Map<string, string>();
-  for (const [tileId, def] of Object.entries(state.tileDefinitions)) {
-    map.set(`${def.coord.q},${def.coord.r}`, tileId);
+// Map from "q,r" coord key → tileId for all tiles in tileDefinitions, used by
+// boundary-drawing routines to check whether a neighbor is in a set. Cached by
+// tileDefinitions identity: definitions are static per game, so the map is
+// built once instead of once per frame.
+const coordToTileIdCache = new WeakMap<object, Map<string, string>>();
+
+function getCoordToTileId(state: GameState): Map<string, string> {
+  let map = coordToTileIdCache.get(state.tileDefinitions);
+  if (!map) {
+    map = new Map<string, string>();
+    for (const [tileId, def] of Object.entries(state.tileDefinitions)) {
+      map.set(`${def.coord.q},${def.coord.r}`, tileId);
+    }
+    coordToTileIdCache.set(state.tileDefinitions, map);
   }
   return map;
 }
@@ -1118,7 +1233,7 @@ function drawTerritoryBorders(
   layout: HexLayout,
   territories: readonly TerritoryDefinition[]
 ): void {
-  const coordToTileId = buildCoordToTileId(state);
+  const coordToTileId = getCoordToTileId(state);
 
   ctx.save();
   ctx.globalAlpha = 0.70;
@@ -1158,7 +1273,7 @@ function drawTerritoryFlashes(
   layout: HexLayout,
   flashes: Map<string, TerritoryFlash>
 ): void {
-  const coordToTileId = buildCoordToTileId(state);
+  const coordToTileId = getCoordToTileId(state);
 
   ctx.save();
   ctx.lineCap = "round";
@@ -1188,6 +1303,53 @@ function drawTerritoryFlashes(
   ctx.restore();
 }
 
+// Pulsing edge arrows pointing at the viewer's tiles that are under attack
+// but currently outside the visible canvas (easy to miss while zoomed in).
+function drawOffscreenAttackIndicators(
+  ctx: CanvasRenderingContext2D,
+  state: GameState,
+  layout: HexLayout,
+  underAttackIds: Set<string>
+): void {
+  const margin = 46;
+  const w = ctx.canvas.width;
+  const h = ctx.canvas.height;
+
+  ctx.save();
+  for (const tileId of underAttackIds) {
+    const tile = state.tiles[tileId];
+    const def = state.tileDefinitions[tileId];
+    if (!tile || !def || tile.owner !== "player1") continue;
+
+    const center = axialToPixel(def.coord, layout);
+    const onScreen =
+      center.x >= 0 && center.x <= w && center.y >= 0 && center.y <= h;
+    if (onScreen) continue;
+
+    // Clamp the indicator inside the margin box; point it toward the tile.
+    const x = Math.max(margin, Math.min(w - margin, center.x));
+    const y = Math.max(margin, Math.min(h - margin, center.y));
+    const angle = Math.atan2(center.y - y, center.x - x);
+
+    const pulse = 0.5 + 0.4 * (0.5 + 0.5 * Math.sin(state.now * 5));
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = "#e08020";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.lineWidth = 2;
+
+    const s = 15;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(angle) * s, y + Math.sin(angle) * s);
+    ctx.lineTo(x + Math.cos(angle + 2.5) * s, y + Math.sin(angle + 2.5) * s);
+    ctx.lineTo(x + Math.cos(angle - 2.5) * s, y + Math.sin(angle - 2.5) * s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 // The main render function called once per animation frame.
 // Draws the full scene in order: background → sea lanes → tiles → action lines → drag line.
 export function renderGame(
@@ -1198,7 +1360,7 @@ export function renderGame(
 ): void {
   const canvas = ctx.canvas;
 
-  const mapConfig = state.mapId === "borderlands" ? BORDERLANDS_MAP_CONFIG : IRON_VALE_MAP_CONFIG;
+  const mapConfig = MAP_IMAGE_CONFIGS[state.mapId];
   const territories = options.territories ?? [];
 
   clearCanvas(ctx, canvas.width, canvas.height);
@@ -1213,19 +1375,27 @@ export function renderGame(
       .map((a) => a.targetTileId)
   );
 
+  const validTargetIds = new Set(options.validTargetIds);
+
   for (const tileId of Object.keys(state.tileDefinitions)) {
+    const captureTime = options.captureFlashes?.get(tileId);
     drawHexTile({
       ctx,
       state,
       tileId,
       layout,
       selected: options.selectedTileId === tileId,
-      validTarget: options.validTargetIds.includes(tileId),
+      validTarget: validTargetIds.has(tileId),
       underAttack: underAttackIds.has(tileId),
+      ...(captureTime !== undefined ? { captureAge: state.now - captureTime } : {}),
     });
   }
 
   drawActiveActions(ctx, state, layout);
+
+  if (options.clashes && options.clashes.size > 0) {
+    drawClashes(ctx, state, layout, options.clashes);
+  }
 
   if (options.territoryFlashes && options.territoryFlashes.size > 0) {
     drawTerritoryFlashes(ctx, state, layout, options.territoryFlashes);
@@ -1238,6 +1408,8 @@ export function renderGame(
   if (options.notifications && options.notifications.length > 0) {
     drawNotifications(ctx, state, layout, options.notifications);
   }
+
+  drawOffscreenAttackIndicators(ctx, state, layout, underAttackIds);
 
   drawDragLine(ctx, state, layout, options);
 }

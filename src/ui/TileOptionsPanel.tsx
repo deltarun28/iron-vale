@@ -6,7 +6,14 @@
  * if the tile is owned by the viewer and they can afford the upgrade.
  */
 
-import { ARMOUR, FORT, GOLD_PRODUCTION_PER_SECOND, TROOP_PRODUCTION_PER_SECOND } from "../game/constants";
+import {
+  ARMOUR,
+  FORT,
+  GOLD_PRODUCTION_PER_SECOND,
+  NEUTRAL_MAX_TROOPS,
+  PRODUCTION_CAPS,
+  TROOP_PRODUCTION_PER_SECOND,
+} from "../game/constants";
 import { areAllies, isPlayer } from "../game/state";
 import type { GameState, OwnerId, PlayerId, TerrainType } from "../game/types";
 
@@ -130,6 +137,23 @@ export function TileOptionsPanel({
             {isBusy
               ? "paused (busy)"
               : getTroopRateLabel(definition.terrain, definition.isCapital, tile.owner === "neutral")}
+          </span>
+        </div>
+        <div className="tile-options__row">
+          <span className="tile-options__label">Capacity</span>
+          <span className="tile-options__value">
+            {(() => {
+              const cap = tile.owner === "neutral"
+                ? NEUTRAL_MAX_TROOPS
+                : PRODUCTION_CAPS[definition.isCapital ? "capital" : definition.terrain].stopsAt;
+              const nearCap = tile.troops >= cap * 0.85;
+              return (
+                <>
+                  {Math.floor(tile.troops)} / {cap}
+                  {nearCap && tile.owner !== "neutral" && " · regen slowing"}
+                </>
+              );
+            })()}
           </span>
         </div>
         {getGoldRateLabel(definition.isCapital, definition.isTown) !== null && tile.owner !== "neutral" && (

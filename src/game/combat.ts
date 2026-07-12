@@ -77,6 +77,93 @@ export function calculateRandomness(
   return COMBAT.RANDOMNESS_BASE / Math.sqrt(Math.sqrt(product));
 }
 
+/** The deterministic inputs to a combat: both sides' power before the random factor. */
+interface CombatPowers {
+  /** Attacker power after armour and vet bonuses, before the random factor. */
+  attackerPower: number;
+  /** Defender power after every modifier including the small-fight bias. */
+  defenderPower: number;
+  /** Half-width of the uniform random band applied to the attacker. */
+  randomness: number;
+}
+
+// The single source of the power formula — used by the real resolution below
+// and by estimateCombatOutcome so AI planning can never drift from the rules.
+function computeCombatPowers(
+  input: Omit<CombatInput, "randomValue">,
+  attackerTroops: number,
+  defenderTroops: number
+): CombatPowers {
+  // Build attacker power: troops × infantry power, then upgrade bonuses.
+  let attackerPower = attackerTroops * COMBAT.INFANTRY_POWER;
+  if (input.attackerArmoured) attackerPower *= ARMOUR.ATTACK_MULTIPLIER;
+  if (input.attackerAttackVetLevel > 0) {
+    attackerPower *= calculateVeteranAttackMultiplier(input.attackerAttackVetLevel);
+  }
+
+  // Build defender power, layering multipliers in order.
+  let defenderPower = defenderTroops * COMBAT.INFANTRY_POWER;
+  defenderPower *= getTerrainDefenceMultiplier(input.defenderTerrain);
+  if (input.defenderIsCapital) defenderPower *= COMBAT.CAPITAL_DEFENCE_MULTIPLIER;
+  if (input.isSeaAttack)       defenderPower *= COMBAT.SEA_ATTACK_DEFENCE_MULTIPLIER;
+  if (input.defenderFortLevel > 0) {
+    defenderPower *= (1 + FORT.DEFENCE_BONUS_PER_LEVEL * input.defenderFortLevel);
+  }
+  if (input.defenderArmoured)       defenderPower *= ARMOUR.DEFENCE_MULTIPLIER;
+  if (input.defenderDefVetLevel > 0) {
+    defenderPower *= calculateVeteranDefenceMultiplier(input.defenderDefVetLevel);
+  }
+
+  // Apply the small-fight defender bias on top of all other modifiers.
+  defenderPower *= 1 + calculateDefenderBias(attackerTroops, defenderTroops);
+
+  return {
+    attackerPower,
+    defenderPower,
+    randomness: calculateRandomness(attackerTroops, defenderTroops),
+  };
+}
+
+/** A pre-battle estimate: the exact win probability over the random factor. */
+export interface CombatEstimate {
+  /** P(attacker wins), integrating over the uniform random factor. */
+  winProbability: number;
+  attackerPower: number;
+  defenderPower: number;
+}
+
+/**
+ * Estimates a combat without rolling it. The attacker wins when
+ * attackerPower × f > defenderPower with f uniform in [1−r, 1+r], so the win
+ * probability has a closed form. Uses only information visible to any player —
+ * this is the "do the maths before attacking" a strong human does, not a cheat.
+ */
+export function estimateCombatOutcome(input: Omit<CombatInput, "randomValue">): CombatEstimate {
+  const attackerTroops = Math.max(0, Math.floor(input.attackerTroops));
+  const defenderTroops = Math.max(0, Math.floor(input.defenderTroops));
+
+  if (attackerTroops <= 0) {
+    return { winProbability: 0, attackerPower: 0, defenderPower: defenderTroops };
+  }
+  if (defenderTroops <= 0) {
+    return { winProbability: 1, attackerPower: attackerTroops, defenderPower: 0 };
+  }
+
+  const powers = computeCombatPowers(input, attackerTroops, defenderTroops);
+  const ratio = powers.defenderPower / Math.max(1e-9, powers.attackerPower);
+  const winProbability = clamp(
+    (1 + powers.randomness - ratio) / (2 * powers.randomness),
+    0,
+    1
+  );
+
+  return {
+    winProbability,
+    attackerPower: powers.attackerPower,
+    defenderPower: powers.defenderPower,
+  };
+}
+
 /**
  * Resolves a single combat between an attacker and defender.
  *
@@ -117,33 +204,13 @@ export function resolveCombat(input: CombatInput): CombatResult {
     };
   }
 
-  // Build attacker power: troops × infantry power, then upgrade bonuses.
-  let baseAttackerPower = attackerTroops * COMBAT.INFANTRY_POWER;
-  if (input.attackerArmoured) baseAttackerPower *= ARMOUR.ATTACK_MULTIPLIER;
-  if (input.attackerAttackVetLevel > 0) {
-    baseAttackerPower *= calculateVeteranAttackMultiplier(input.attackerAttackVetLevel);
-  }
-
-  // Build defender power, layering multipliers in order.
-  let defenderPower = defenderTroops * COMBAT.INFANTRY_POWER;
-  defenderPower *= getTerrainDefenceMultiplier(input.defenderTerrain);
-  if (input.defenderIsCapital) defenderPower *= COMBAT.CAPITAL_DEFENCE_MULTIPLIER;
-  if (input.isSeaAttack)       defenderPower *= COMBAT.SEA_ATTACK_DEFENCE_MULTIPLIER;
-  if (input.defenderFortLevel > 0) {
-    defenderPower *= (1 + FORT.DEFENCE_BONUS_PER_LEVEL * input.defenderFortLevel);
-  }
-  if (input.defenderArmoured)       defenderPower *= ARMOUR.DEFENCE_MULTIPLIER;
-  if (input.defenderDefVetLevel > 0) {
-    defenderPower *= calculateVeteranDefenceMultiplier(input.defenderDefVetLevel);
-  }
-
-  // Apply the small-fight defender bias on top of all other modifiers.
-  const defenderBias = calculateDefenderBias(attackerTroops, defenderTroops);
-  defenderPower *= 1 + defenderBias;
-
   // Randomness is applied only to the attacker so it can swing a fight
   // either way without additionally buffing the already-advantaged defender.
-  const randomness = calculateRandomness(attackerTroops, defenderTroops);
+  const {
+    attackerPower: baseAttackerPower,
+    defenderPower,
+    randomness,
+  } = computeCombatPowers(input, attackerTroops, defenderTroops);
 
   // Map input.randomValue (0–1) to a factor between (1 - randomness) and (1 + randomness).
   const safeRandomValue = clamp(input.randomValue, 0, 1);

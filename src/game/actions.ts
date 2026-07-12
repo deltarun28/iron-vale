@@ -11,7 +11,7 @@
  */
 
 import { calculateCombatResolutionTime, calculateVeteranAttackMultiplier, resolveCombat } from "./combat";
-import { ARMOUR, FORT } from "./constants";
+import { ARMOUR, FORT, incrementFortLevel } from "./constants";
 import { spendGold } from "./economy";
 import {
   calculateEmbarkCooldownSeconds,
@@ -57,7 +57,7 @@ export function createLandAction(params: {
   remainingPath?: string[]; // set by createChainedReinforceAction for multi-hop moves
   sendFraction?: number;    // fraction to re-apply at each intermediate hop
 }): GameState {
-  let nextState = cloneGameState(params.state);
+  const nextState = cloneGameState(params.state);
 
   const source = nextState.tiles[params.sourceTileId];
   const target = nextState.tiles[params.targetTileId];
@@ -382,7 +382,7 @@ export function buildFortification(params: {
   if (player.gold < FORT.GOLD_COST_PER_LEVEL) return nextState;
 
   player.gold -= FORT.GOLD_COST_PER_LEVEL;
-  tile.fortLevel = (tile.fortLevel + 1) as 0 | 1 | 2 | 3 | 4 | 5;
+  tile.fortLevel = incrementFortLevel(tile.fortLevel);
   tile.busyUntil = nextState.now + FORT.BUILD_SECONDS_PER_LEVEL;
 
   return nextState;

@@ -9,19 +9,25 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src",
     "simulate": "tsx scripts/simulate.ts"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^5.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "typescript": "^5.8.0",
-    "vite": "^7.0.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "eslint": "^10.7.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "tsx": "^4.19.4",
-    "vite-plugin-pwa": "^1.3.0"
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.63.0",
+    "vite": "^7.0.0",
+    "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^4.1.10"
   }
 }

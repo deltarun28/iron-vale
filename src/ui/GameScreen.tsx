@@ -19,15 +19,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { applyArmour, buildFortification, createBestAvailableAction, createChainedReinforceAction } from "../game/actions";
 import { updateAI } from "../game/ai";
-import { playCoin, playCapture, playDefeat, playSend, playVictory } from "../game/audio";
-import { findSeaLaneBetween } from "../game/movement";
+import { playCoin, playCapture, playDefeat, playSend, playVictory, vibrate } from "../game/audio";
+import { getMapConfig } from "../game/maps";
+import { findSeaLaneBetween, getSeaNeighbors } from "../game/movement";
 import { areAllies, createInitialGameState, getTeamId } from "../game/state";
 import { saveGame } from "../game/storage";
 import { updateGame } from "../game/simulation";
 import { getTerritoriesForMap, getTerritoryController } from "../game/territories";
 import type { Difficulty, GameState, MapId, MapTheme, PlayerMode } from "../game/types";
-import { renderGame } from "../render/canvasRenderer";
-import type { FloatingNotification, TerritoryFlash } from "../render/canvasRenderer";
+import { getOwnerStroke, renderGame } from "../render/canvasRenderer";
+import type { ClashEffect, FloatingNotification, TerritoryFlash } from "../render/canvasRenderer";
 import {
   getDragTargetTileIdAtPoint,
   getCanvasPointFromEvent,
@@ -59,17 +60,21 @@ function getValidTargets(state: GameState, sourceTileId: string | null): string[
   }
 
   const landTargets = sourceDefinition.adjacent;
+  const seaTargets = getSeaNeighbors(state.seaLanes, sourceTileId);
 
-  // For each sea lane, find the tile on the other end from the source.
-  const seaTargets = state.seaLanes
-    .map((lane) => {
-      if (lane.from === sourceTileId) return lane.to;
-      if (lane.bidirectional && lane.to === sourceTileId) return lane.from;
-      return null;
-    })
-    .filter((tileId): tileId is string => tileId !== null);
+  // Teammate tiles are excluded — validateLandAction/validateSeaAction reject
+  // them, so highlighting them would advertise a drop that silently does nothing.
+  return Array.from(new Set([...landTargets, ...seaTargets])).filter((tileId) => {
+    const owner = state.tiles[tileId]?.owner ?? "neutral";
+    return owner === "player1" || !areAllies(state, "player1", owner);
+  });
+}
 
-  return Array.from(new Set([...landTargets, ...seaTargets]));
+// A pointer-down position and tile, used to distinguish taps from drags.
+interface TapCandidate {
+  tileId: string;
+  x: number;
+  y: number;
 }
 
 // CSS pixels (from pointer events) → canvas buffer pixels (from layout).
@@ -82,10 +87,14 @@ function toBufferPoint(cssPoint: Point): Point {
   };
 }
 
-// Builds the coord lookup required by getTileIdAtPoint.
-function buildTileCoords(state: GameState): Record<string, { q: number; r: number }> {
+// Builds the coord lookup required by getTileIdAtPoint. Tile definitions are
+// static per game, so callers memoize the result instead of rebuilding it on
+// every pointer event.
+function buildTileCoords(
+  tileDefinitions: GameState["tileDefinitions"]
+): Record<string, { q: number; r: number }> {
   return Object.fromEntries(
-    Object.values(state.tileDefinitions).map((def) => [def.id, def.coord])
+    Object.values(tileDefinitions).map((def) => [def.id, def.coord])
   );
 }
 
@@ -206,7 +215,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
 
   // useState triggers a React re-render when it changes.
   const [state, setState] = useState<GameState>(
-    () => initialState ?? createInitialGameState(difficulty, playerMode, mapId)
+    () => initialState ?? createInitialGameState(difficulty, playerMode, mapId, mapTheme)
   );
 
   // isPaused is React state (triggers HUD re-render) mirrored in a ref (readable
@@ -233,12 +242,19 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
 
   // Tracks the tile and CSS position of a pointer-down so we can distinguish
   // a tap (< 12px movement, released on same tile) from a drag.
-  const tapCandidateRef = useRef<{ tileId: string; x: number; y: number } | null>(null);
+  const tapCandidateRef = useRef<TapCandidate | null>(null);
 
-  // Tile definitions never change during a session (they are static map data).
-  // Storing them in a ref lets the global mouseup handler do hit-testing without
-  // needing access to live component state.
+  // Tile definitions never change during a game (they are static map data,
+  // replaced only when a new game starts). Storing them in a ref lets the
+  // global mouseup handler do hit-testing without live component state.
   const tileDefsRef = useRef(state.tileDefinitions);
+
+  // Coord lookup for hit-testing, built once per game rather than per event.
+  const tileCoords = useMemo(
+    () => buildTileCoords(state.tileDefinitions),
+    [state.tileDefinitions]
+  );
+  const tileCoordsRef = useRef(tileCoords);
 
   // Used by the game loop to read the latest state without subscribing to it.
   const stateRef = useRef(state);
@@ -254,14 +270,27 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   const nextNotifIdRef = useRef(0);
   const prevStateRef = useRef<GameState | null>(null);
 
+  // Battle impact effects keyed by `${tileId}:${time}`. Fed from
+  // state.combatEvents; lastCombatTimeRef tracks the newest event processed
+  // (events are append-only with time = the tick they resolved).
+  const clashesRef = useRef<Map<string, ClashEffect>>(new Map());
+  const lastCombatTimeRef = useRef(0);
+
   // Pan offset in buffer pixels. panOffsetRef is always current; panOffset state
   // triggers a canvas re-render so the shifted view is drawn immediately.
   const [panOffset, setPanOffset] = useState<Point>({ x: 0, y: 0 });
   const panOffsetRef = useRef<Point>({ x: 0, y: 0 });
 
   // Joystick: normalized direction vector set by the joystick thumb.
-  // Applied to pan each rAF tick; zeroed when the joystick is released.
+  // Applied to pan each rAF tick. On release the delta glides to zero over
+  // ~300ms (joystickGlidingRef) instead of stopping dead.
   const joystickDeltaRef = useRef<Point>({ x: 0, y: 0 });
+  const joystickGlidingRef = useRef(false);
+
+  // Double-tap-to-fit: last tap on empty map area, and the in-flight
+  // view-reset animation (zoom → 1, pan → 0 over 250ms, eased).
+  const lastEmptyTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const viewResetAnimRef = useRef<{ start: number; fromZoom: number; fromPan: Point } | null>(null);
 
   // Edge-scroll: set each move event when a drag is near a canvas edge;
   // drives continuous pan toward the drag target when the map needs to follow.
@@ -300,6 +329,8 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   panOffsetRef.current = panOffset;
   zoomRef.current = zoom;
   speedRef.current = speed;
+  tileDefsRef.current = state.tileDefinitions;
+  tileCoordsRef.current = tileCoords;
 
   const validTargetIds = useMemo(
     () => getValidTargets(state, dragSource),
@@ -307,6 +338,13 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   );
 
   function resetGame(): void {
+    // Clear effect state from the previous match so nothing bleeds across.
+    prevStateRef.current = null;
+    captureFlashesRef.current = new Map();
+    territoryFlashesRef.current = new Map();
+    notificationsRef.current = [];
+    clashesRef.current = new Map();
+    lastCombatTimeRef.current = 0;
     dragSourceRef.current = null;
     dragPointRef.current = null;
     tapCandidateRef.current = null;
@@ -314,6 +352,9 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     panOffsetRef.current = { x: 0, y: 0 };
     edgeScrollRef.current = { x: 0, y: 0 };
     joystickDeltaRef.current = { x: 0, y: 0 };
+    joystickGlidingRef.current = false;
+    lastEmptyTapRef.current = null;
+    viewResetAnimRef.current = null;
     zoomRef.current = 1.0;
     speedRef.current = 1;
     pinchRef.current = null;
@@ -327,8 +368,8 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     setZoom(1.0);
     setSpeed(1);
     setPreviewSecondsLeft(null);
-    // Preserve the current difficulty, mode, and map so "play again" keeps them.
-    setState(createInitialGameState(state.ai.difficulty, state.playerMode, state.mapId));
+    // Preserve the current difficulty, mode, map, and theme so "play again" keeps them.
+    setState(createInitialGameState(state.ai.difficulty, state.playerMode, state.mapId, state.mapTheme));
   }
 
   function handlePause(): void {
@@ -368,6 +409,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   function handleJoystickPointerDown(e: React.PointerEvent<HTMLDivElement>): void {
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
+    joystickGlidingRef.current = false;
   }
 
   function handleJoystickPointerMove(e: React.PointerEvent<HTMLDivElement>): void {
@@ -390,7 +432,8 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
   }
 
   function handleJoystickPointerUp(): void {
-    joystickDeltaRef.current = { x: 0, y: 0 };
+    // Keep the current delta and let the game loop glide it to zero.
+    joystickGlidingRef.current = true;
     setJoystickThumb({ x: 0, y: 0 });
   }
 
@@ -415,6 +458,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       const dist = getTouchDistance(event.nativeEvent.touches);
       const mid = getTouchMidpoint(event.nativeEvent.touches, canvas);
       pinchRef.current = { dist, midCss: mid };
+      viewResetAnimRef.current = null; // pinch takes over from any fit animation
       dragSourceRef.current = null;
       dragPointRef.current = null;
       tapCandidateRef.current = null;
@@ -432,10 +476,29 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     const tileId = getTileIdAtPoint({
       point: bufferPoint,
       layout,
-      tileCoords: buildTileCoords(state),
+      tileCoords,
     });
     if (tileId) {
       tapCandidateRef.current = { tileId, x: cssPoint.x, y: cssPoint.y };
+    } else {
+      // Double-tap on empty map area re-fits the view (works for mouse
+      // double-click too, since this handler sees both input types).
+      const lastTap = lastEmptyTapRef.current;
+      const tapTime = performance.now();
+      const isDoubleTap =
+        lastTap !== null &&
+        tapTime - lastTap.time < 300 &&
+        Math.hypot(cssPoint.x - lastTap.x, cssPoint.y - lastTap.y) < 24;
+      if (isDoubleTap) {
+        lastEmptyTapRef.current = null;
+        viewResetAnimRef.current = {
+          start: tapTime,
+          fromZoom: zoomRef.current,
+          fromPan: { ...panOffsetRef.current },
+        };
+      } else {
+        lastEmptyTapRef.current = { time: tapTime, x: cssPoint.x, y: cssPoint.y };
+      }
     }
 
     // Any touch on a player-owned, non-busy tile starts a troop drag.
@@ -460,22 +523,20 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
 
   }
 
-  // ─── Touch-end: resolve a touch drag ──────────────────────────────────────
+  // ─── Release handling (shared by touch-end and global mouse-up) ───────────
 
-  // Touch-end is handled here (in JSX) rather than in a global window listener
-  // because changedTouches gives us the final finger position reliably.
-  // Mouse-up is handled in the global listener below so it fires even if the
-  // cursor has moved outside the canvas (e.g. over the HUD overlay).
-  function handleTouchEnd(event: React.TouchEvent<HTMLCanvasElement>): void {
-    event.preventDefault();
-
-    const source = dragSourceRef.current;
-    const tapCandidate = tapCandidateRef.current;
-    const canvas = canvasRef.current;
-    const layout = layoutRef.current;
-
-    // Clear all pointer state before resolving so no stale drag line flashes.
-    const dragPath = dragPathRef.current;
+  // Snapshots the in-progress drag/tap state, then clears every pointer ref so
+  // no stale drag line flashes while the release resolves.
+  function capturePointerState(): {
+    source: string | null;
+    dragPath: string[];
+    tapCandidate: TapCandidate | null;
+  } {
+    const captured = {
+      source: dragSourceRef.current,
+      dragPath: dragPathRef.current,
+      tapCandidate: tapCandidateRef.current,
+    };
     dragSourceRef.current = null;
     dragPointRef.current = null;
     dragPathRef.current = [];
@@ -484,11 +545,24 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     edgeScrollRef.current = { x: 0, y: 0 };
     pinchRef.current = null;
     setDragSource(null);
+    return captured;
+  }
 
-    if (!canvas || !layout) return;
-
-    const cssPoint = getCanvasPointFromEvent(event.nativeEvent, canvas);
-    if (!cssPoint) return;
+  // Resolves a drag/tap release at cssPoint: opens the tile panel on a tap,
+  // dispatches a chained reinforce when the drag traced a path, otherwise
+  // issues the best direct action. Reads only refs and stable setters so the
+  // same logic serves the JSX touch handler and the global mouse listener.
+  function resolveRelease(
+    cssPoint: Point,
+    captured: {
+      source: string | null;
+      dragPath: string[];
+      tapCandidate: TapCandidate | null;
+    }
+  ): void {
+    const layout = layoutRef.current;
+    if (!layout) return;
+    const { source, dragPath, tapCandidate } = captured;
 
     // Tap detection: minimal movement + released over the same tile.
     if (tapCandidate) {
@@ -498,7 +572,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
         const releasedTileId = getTileIdAtPoint({
           point: toBufferPoint(cssPoint),
           layout,
-          tileCoords: buildTileCoords(state),
+          tileCoords: tileCoordsRef.current,
         });
         if (releasedTileId === tapCandidate.tileId) {
           setOptionsTileId(tapCandidate.tileId);
@@ -512,7 +586,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     const releasedTileId = getDragTargetTileIdAtPoint({
       point: toBufferPoint(cssPoint),
       layout,
-      tileCoords: buildTileCoords(state),
+      tileCoords: tileCoordsRef.current,
       radiusFraction: 0.85,
     });
 
@@ -522,7 +596,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     let effectivePath = dragPath;
     const lastInPath = dragPath[dragPath.length - 1];
     if (lastInPath && releasedTileId && releasedTileId !== source && !dragPath.includes(releasedTileId)) {
-      const lastDef = state.tileDefinitions[lastInPath];
+      const lastDef = tileDefsRef.current[lastInPath];
       if (lastDef?.adjacent.includes(releasedTileId)) {
         effectivePath = [...dragPath, releasedTileId];
       }
@@ -534,8 +608,9 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       && releasedTileId !== source
       && !effectivePath.includes(releasedTileId);
 
+    const fraction = sendFractionRef.current;
+
     if (!releasedOffPath && effectivePath.length >= 3) {
-      const fraction = sendFraction;
       setState((currentState) => {
         const sourceTile = currentState.tiles[effectivePath[0]!];
         const troopsSent = sourceTile ? Math.max(1, Math.floor(sourceTile.troops * fraction)) : 1;
@@ -546,14 +621,18 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
 
     if (!releasedTileId || releasedTileId === source) return;
 
-    // Use an updater function so the action is issued against the freshest state,
-    // not the potentially-stale snapshot captured by this handler's closure.
-    // sendFraction is React state so it's always current in this handler.
-    const fraction = sendFraction;
-    const targetOwner = state.tiles[releasedTileId]?.owner ?? "neutral";
-    const isReinforce = areAllies(state, "player1", targetOwner);
-    if (findSeaLaneBetween(state.seaLanes, source, releasedTileId)) playCoin();
-    else if (!isReinforce) playSend();
+    // Sounds only fire when the drop will actually be accepted, checked against
+    // the freshest state so a rejected move stays silent.
+    const soundState = stateRef.current;
+    if (getValidTargets(soundState, source).includes(releasedTileId)) {
+      const targetOwner = soundState.tiles[releasedTileId]?.owner ?? "neutral";
+      const isReinforce = areAllies(soundState, "player1", targetOwner);
+      if (findSeaLaneBetween(soundState.seaLanes, source, releasedTileId)) playCoin();
+      else if (!isReinforce) playSend();
+    }
+
+    // Use an updater function so the action is issued against the freshest
+    // state, not a potentially-stale snapshot captured by a handler's closure.
     setState((currentState) => {
       const freshTargets = getValidTargets(currentState, source);
       if (!freshTargets.includes(releasedTileId)) return currentState;
@@ -572,14 +651,33 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     });
   }
 
+  // The global mouse-up listener lives in a [] effect, so it reaches the
+  // current render's functions through this ref (they only touch refs and
+  // stable setters, but keeping the ref fresh avoids relying on that).
+  const releaseRef = useRef({ capturePointerState, resolveRelease });
+  releaseRef.current = { capturePointerState, resolveRelease };
+
+  // ─── Touch-end: resolve a touch drag ──────────────────────────────────────
+
+  // Touch-end is handled here (in JSX) rather than in a global window listener
+  // because changedTouches gives us the final finger position reliably.
+  // Mouse-up is handled in the global listener below so it fires even if the
+  // cursor has moved outside the canvas (e.g. over the HUD overlay).
+  function handleTouchEnd(event: React.TouchEvent<HTMLCanvasElement>): void {
+    event.preventDefault();
+
+    const captured = capturePointerState();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const cssPoint = getCanvasPointFromEvent(event.nativeEvent, canvas);
+    if (!cssPoint) return;
+
+    resolveRelease(cssPoint, captured);
+  }
+
   function handleDragCancel(): void {
-    dragSourceRef.current = null;
-    dragPointRef.current = null;
-    dragPathRef.current = [];
-    dragLastTileRef.current = null;
-    edgeScrollRef.current = { x: 0, y: 0 };
-    pinchRef.current = null;
-    setDragSource(null);
+    capturePointerState();
   }
 
   // ─── Game loop ────────────────────────────────────────────────────────────
@@ -606,6 +704,36 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
         const clampedPan = clampPan(rawPan, tileSize);
         panOffsetRef.current = clampedPan;
         setPanOffset(clampedPan);
+      }
+
+      // Joystick glide: after release, the pan velocity decays smoothly to
+      // zero instead of stopping dead.
+      if (joystickGlidingRef.current) {
+        const decay = Math.exp(-rawDelta * 5);
+        const next = { x: jDelta.x * decay, y: jDelta.y * decay };
+        if (Math.hypot(next.x, next.y) < 0.02) {
+          joystickDeltaRef.current = { x: 0, y: 0 };
+          joystickGlidingRef.current = false;
+        } else {
+          joystickDeltaRef.current = next;
+        }
+      }
+
+      // Double-tap-to-fit: ease zoom back to 1 and pan back to origin.
+      const resetAnim = viewResetAnimRef.current;
+      if (resetAnim) {
+        const t = Math.min(1, (time - resetAnim.start) / 250);
+        const ease = 1 - Math.pow(1 - t, 3);
+        const newZoom = resetAnim.fromZoom + (1 - resetAnim.fromZoom) * ease;
+        const newPan = {
+          x: resetAnim.fromPan.x * (1 - ease),
+          y: resetAnim.fromPan.y * (1 - ease),
+        };
+        zoomRef.current = newZoom;
+        panOffsetRef.current = newPan;
+        setZoom(newZoom);
+        setPanOffset(newPan);
+        if (t >= 1) viewResetAnimRef.current = null;
       }
 
       // Preview phase: freeze the game and run a real-time 4-second countdown.
@@ -670,21 +798,16 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
 
     resizeCanvasToDisplaySize(canvas);
 
-    // Layout computation is map-specific.
-    // Iron Vale: q spans -4..+2, r spans -1..+1 (wide and short).
-    // Borderlands: q spans -3..+2, r spans -3..+3 (7-row diamond, shifted left of centre).
-    const isSmallMap = state.mapId !== "borderlands";
-    const fittedSize = isSmallMap
-      ? Math.min(canvas.width / 13, canvas.height / 6)
-      : Math.min(canvas.width / 11, canvas.height / 11);
+    // Layout numbers (fit divisors, origin offsets) are map-specific and live
+    // in the map config so this stays in sync with the zoom handlers below.
+    const mapCfg = getMapConfig(state.mapId);
+    const fittedSize = Math.min(canvas.width / mapCfg.fitDivX, canvas.height / mapCfg.fitDivY);
     const tileSize = Math.max(60, fittedSize * zoomRef.current);
     const baseLayout: HexLayout = {
       size: tileSize,
       origin: {
-        // Iron Vale needs a rightward/upward nudge to centre on its asymmetric grid.
-        // Borderlands: pixel centre of the tile extent is 0.866*size right of q=0,r=0.
-        x: canvas.width  / 2 + (isSmallMap ? tileSize * 1.73 : tileSize * 0.87),
-        y: canvas.height / 2 + (isSmallMap ? -tileSize * 0.2 : 0),
+        x: canvas.width  / 2 + tileSize * mapCfg.originXMul,
+        y: canvas.height / 2 + tileSize * mapCfg.originYMul,
       },
     };
 
@@ -698,6 +821,8 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     const prev = prevStateRef.current;
     if (prev) {
       let anyCapture = false;
+      let anyLoss = false;
+      let capitalChanged = false;
       for (const [id, tile] of Object.entries(state.tiles)) {
         const prevTile = prev.tiles[id];
         if (prevTile && tile.owner !== prevTile.owner) {
@@ -706,11 +831,62 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
             anyCapture = true;
             notificationsRef.current.push({ id: nextNotifIdRef.current++, text: "Captured!", tileId: id, createdAt: state.now });
           } else if (prevTile.owner === "player1") {
+            anyLoss = true;
             notificationsRef.current.push({ id: nextNotifIdRef.current++, text: "Lost!", tileId: id, createdAt: state.now });
+          }
+          if (
+            state.tileDefinitions[id]?.isCapital &&
+            (tile.owner === "player1" || prevTile.owner === "player1")
+          ) {
+            capitalChanged = true;
           }
         }
       }
       if (anyCapture) playCapture();
+      // Haptic feedback (mobile): short tick on capture, longer on loss,
+      // a distinct double-buzz when a capital changes hands.
+      if (capitalChanged) vibrate([40, 50, 80]);
+      else if (anyLoss) vibrate(50);
+      else if (anyCapture) vibrate(30);
+
+      // Combat events → clash effects and floating casualty numbers, each in
+      // the losing side's colour, offset left/right so both fit on one tile.
+      for (const event of state.combatEvents) {
+        if (event.time <= lastCombatTimeRef.current) continue;
+        clashesRef.current.set(`${event.targetTileId}:${event.time}`, {
+          tileId: event.targetTileId,
+          time: event.time,
+          attackerWon: event.attackerWon,
+        });
+        const attackerLosses = Math.floor(event.attackerLosses);
+        const defenderLosses = Math.floor(event.defenderLosses);
+        if (attackerLosses >= 1) {
+          notificationsRef.current.push({
+            id: nextNotifIdRef.current++,
+            text: `−${attackerLosses}`,
+            tileId: event.targetTileId,
+            createdAt: state.now,
+            color: getOwnerStroke(event.attackerOwner),
+            offsetX: -0.45,
+          });
+        }
+        if (defenderLosses >= 1) {
+          notificationsRef.current.push({
+            id: nextNotifIdRef.current++,
+            text: `−${defenderLosses}`,
+            tileId: event.targetTileId,
+            createdAt: state.now,
+            color: getOwnerStroke(event.defenderOwner),
+            offsetX: 0.45,
+          });
+        }
+      }
+      lastCombatTimeRef.current = Math.max(lastCombatTimeRef.current, state.now);
+
+      // Prune expired clash effects.
+      for (const [key, clash] of clashesRef.current) {
+        if (state.now - clash.time >= 0.8) clashesRef.current.delete(key);
+      }
 
       // Prune old notifications (older than 2.5s) to prevent unbounded growth
       notificationsRef.current = notificationsRef.current.filter(
@@ -751,6 +927,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     renderGame(ctx, state, pannedLayout, {
       selectedTileId: dragSource ?? optionsTileId,
       validTargetIds,
+      tileCoords,
       dragPoint: dragPointRef.current,
       ...(dragPathRef.current.length >= 2 ? { dragPath: dragPathRef.current } : {}),
       sendFraction,
@@ -758,9 +935,10 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       captureFlashes: captureFlashesRef.current,
       territoryFlashes: territoryFlashesRef.current,
       notifications: notificationsRef.current,
+      clashes: clashesRef.current,
       territories: getTerritoriesForMap(state.mapId),
     });
-  }, [state, dragSource, validTargetIds, optionsTileId, sendFraction, panOffset, zoom]);
+  }, [state, dragSource, validTargetIds, optionsTileId, sendFraction, panOffset, zoom, mapTheme, tileCoords]);
 
   // ─── Global event listeners ───────────────────────────────────────────────
 
@@ -801,9 +979,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       const newTileId = getTileIdAtPoint({
         point: toBufferPoint(cssPoint),
         layout,
-        tileCoords: Object.fromEntries(
-          Object.entries(tileDefsRef.current).map(([id, def]) => [id, def.coord])
-        ),
+        tileCoords: tileCoordsRef.current,
       });
       if (!newTileId || newTileId === dragLastTileRef.current) return;
       dragLastTileRef.current = newTileId;
@@ -835,111 +1011,17 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
     }
 
     function onGlobalMouseUp(event: MouseEvent): void {
-      const source = dragSourceRef.current;
-      const dragPath = dragPathRef.current;
-      const tapCandidate = tapCandidateRef.current;
-
-      dragSourceRef.current = null;
-      dragPointRef.current = null;
-      dragPathRef.current = [];
-      dragLastTileRef.current = null;
-      tapCandidateRef.current = null;
-      edgeScrollRef.current = { x: 0, y: 0 };
-      setDragSource(null); // React state setter is stable - safe to use in [] effect
-
-      if (source === null && tapCandidate === null) return;
+      // Shared release logic lives on releaseRef (kept fresh each render).
+      const captured = releaseRef.current.capturePointerState();
+      if (captured.source === null && captured.tapCandidate === null) return;
 
       const canvas = canvasRef.current;
-      const layout = layoutRef.current;
-
-      if (!canvas || !layout) return;
+      if (!canvas) return;
 
       const cssPoint = getCanvasPointFromEvent(event, canvas);
       if (!cssPoint) return;
 
-      // Tap detection: minimal movement + released over the same tile.
-      if (tapCandidate) {
-        const dx = cssPoint.x - tapCandidate.x;
-        const dy = cssPoint.y - tapCandidate.y;
-        if (Math.sqrt(dx * dx + dy * dy) < 12) {
-          const releasedTileId = getTileIdAtPoint({
-            point: toBufferPoint(cssPoint),
-            layout,
-            tileCoords: Object.fromEntries(
-              Object.entries(tileDefsRef.current).map(([id, def]) => [id, def.coord])
-            ),
-          });
-          if (releasedTileId === tapCandidate.tileId) {
-            setOptionsTileId(releasedTileId); // stable setter, safe in [] effect
-            return;
-          }
-        }
-      }
-
-      if (source === null) return;
-
-      const releasedTileId = getDragTargetTileIdAtPoint({
-        point: toBufferPoint(cssPoint),
-        layout,
-        // tileDefsRef.current is static map data - safe to read from a [] effect closure.
-        tileCoords: Object.fromEntries(
-          Object.entries(tileDefsRef.current).map(([id, def]) => [id, def.coord])
-        ),
-        radiusFraction: 0.85,
-      });
-
-      // Enemy tiles are filtered from the drag path during dragging, so if the
-      // release tile is adjacent to the last path tile, extend the path to include
-      // it as the final chain target (handles A→B→C where C is enemy).
-      let effectivePath = dragPath;
-      const lastInPath = dragPath[dragPath.length - 1];
-      if (lastInPath && releasedTileId && releasedTileId !== source && !dragPath.includes(releasedTileId)) {
-        const lastDef = tileDefsRef.current[lastInPath];
-        if (lastDef?.adjacent.includes(releasedTileId)) {
-          effectivePath = [...dragPath, releasedTileId];
-        }
-      }
-
-      // Prefer a direct action (e.g. sea attack) when released off the effective
-      // path, even if friendly tiles were crossed en route.
-      const releasedOffPath = releasedTileId !== null
-        && releasedTileId !== source
-        && !effectivePath.includes(releasedTileId);
-
-      if (!releasedOffPath && effectivePath.length >= 3) {
-        const fraction = sendFractionRef.current;
-        setState((currentState) => {
-          const sourceTile = currentState.tiles[effectivePath[0]!];
-          const troopsSent = sourceTile ? Math.max(1, Math.floor(sourceTile.troops * fraction)) : 1;
-          return createChainedReinforceAction({ state: currentState, playerId: "player1", path: effectivePath, troopsSent, sendFraction: fraction });
-        });
-        return;
-      }
-
-      if (!releasedTileId || releasedTileId === source) return;
-
-      // sendFractionRef is always current even inside a [] effect closure.
-      const fraction = sendFractionRef.current;
-      const currentState0 = stateRef.current;
-      const targetOwner0 = currentState0.tiles[releasedTileId]?.owner ?? "neutral";
-      const isReinforce0 = areAllies(currentState0, "player1", targetOwner0);
-      if (findSeaLaneBetween(currentState0.seaLanes, source, releasedTileId)) playCoin();
-      else if (!isReinforce0) playSend();
-      setState((currentState) => {
-        const freshTargets = getValidTargets(currentState, source);
-        if (!freshTargets.includes(releasedTileId)) return currentState;
-        const sourceTile = currentState.tiles[source];
-        const troopsSent = sourceTile
-          ? Math.max(1, Math.floor(sourceTile.troops * fraction))
-          : undefined;
-        return createBestAvailableAction({
-          state: currentState,
-          playerId: "player1",
-          sourceTileId: source,
-          targetTileId: releasedTileId,
-          ...(troopsSent !== undefined ? { troopsSent } : {}),
-        });
-      });
+      releaseRef.current.resolveRelease(cssPoint, captured);
     }
 
     // ── Non-passive touchmove ────────────────────────────────────────────────
@@ -957,7 +1039,7 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
         const newDist = getTouchDistance(event.touches);
         const newMid = getTouchMidpoint(event.touches, canvas);
         const ratio = newDist / Math.max(1, pinchRef.current.dist);
-        const isSmall = stateRef.current.mapId !== "borderlands";
+        const mapCfg = getMapConfig(stateRef.current.mapId);
         const result = computeZoomUpdate({
           newZoom: zoomRef.current * ratio,
           focusCss: newMid,
@@ -965,10 +1047,10 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
           currentPan: panOffsetRef.current,
           canvasWidth: canvas.width,
           canvasHeight: canvas.height,
-          originXMul: isSmall ? 1.73 : 0.87,
-          originYMul: isSmall ? -0.2 : 0,
-          fitDivX: isSmall ? 13 : 11,
-          fitDivY: isSmall ? 6  : 11,
+          originXMul: mapCfg.originXMul,
+          originYMul: mapCfg.originYMul,
+          fitDivX: mapCfg.fitDivX,
+          fitDivY: mapCfg.fitDivY,
         });
         pinchRef.current = { dist: newDist, midCss: newMid };
         zoomRef.current = result.zoom;
@@ -1005,7 +1087,8 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
       if (event.deltaMode === 2) pixelDelta *= 600;
 
       const factor = Math.pow(0.999, pixelDelta);
-      const isSmall2 = stateRef.current.mapId !== "borderlands";
+      viewResetAnimRef.current = null; // manual zoom takes over
+      const mapCfg = getMapConfig(stateRef.current.mapId);
       const result = computeZoomUpdate({
         newZoom: zoomRef.current * factor,
         focusCss: cssPoint,
@@ -1013,10 +1096,10 @@ export function GameScreen({ difficulty, mapId, mapTheme, playerMode, initialSta
         currentPan: panOffsetRef.current,
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
-        originXMul: isSmall2 ? 1.73 : 0.87,
-        originYMul: isSmall2 ? -0.2 : 0,
-        fitDivX: isSmall2 ? 13 : 11,
-        fitDivY: isSmall2 ? 6  : 11,
+        originXMul: mapCfg.originXMul,
+        originYMul: mapCfg.originYMul,
+        fitDivX: mapCfg.fitDivX,
+        fitDivY: mapCfg.fitDivY,
       });
       zoomRef.current = result.zoom;
       panOffsetRef.current = result.pan;

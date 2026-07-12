@@ -49,6 +49,12 @@ export type ActionType =
 /** The AI's current strategic posture. Influences target selection and troop sizing. */
 export type AIStance = "defensive" | "balanced" | "aggressive";
 
+/** Veteran experience level (attack or defence). 0 = none, 3 = max. */
+export type VetLevel = 0 | 1 | 2 | 3;
+
+/** Fortification level. 0 = none, 5 = max. */
+export type FortLevel = 0 | 1 | 2 | 3 | 4 | 5;
+
 // An "interface" describes the shape of an object - every field listed here
 // must be present (unless marked optional with ?).
 export interface AxialCoord {
@@ -89,16 +95,16 @@ export interface TileState {
   // Gold generation pauses briefly after a town or capital changes hands.
   goldFrozenUntil: number | null;
 
-  // Fortification level (0 = none, max 5). Each level adds +6% defence and slows attacks.
+  // Fortification level. Each level adds +6% defence and slows attacks.
   // Level drops by 2 when captured (minimum 0). Building costs 5g and takes 4s per level.
-  fortLevel: 0 | 1 | 2 | 3 | 4 | 5;
+  fortLevel: FortLevel;
   armoured: boolean;  // equipped garrison: +25% combat power for attack and defence
 
-  // Veteran levels earned through combat experience. 0 = none, max 3.
+  // Veteran levels earned through combat experience.
   // Attack vets are earned by winning attacks; defence vets by surviving defence.
   // Levels travel with troops when the garrison moves.
-  attackVetLevel: 0 | 1 | 2 | 3;
-  defVetLevel: 0 | 1 | 2 | 3;
+  attackVetLevel: VetLevel;
+  defVetLevel: VetLevel;
 }
 
 /**
@@ -139,6 +145,34 @@ export interface PlayerState {
   totalTroopsProduced: number;
   /** Gold added by production from all capitals and towns over the entire match. */
   totalGoldEarned: number;
+  /** Tiles lost to any opponent (or neutral invasion) this match. */
+  tilesLost: number;
+  /** Capitals lost this match — fuels the comeback achievement. */
+  capitalsLost: number;
+  /** True once this player has successfully reclaimed escrowed gold. */
+  escrowReclaimed: boolean;
+}
+
+/**
+ * A combat that resolved recently. Kept in GameState for a few seconds so the
+ * renderer can draw clash effects and casualty numbers; pruned by updateGame.
+ */
+export interface CombatEvent {
+  /** Game time the combat resolved. Events are append-only, so consumers can
+   * track the last-processed time instead of needing ids. */
+  time: number;
+  targetTileId: string;
+  attackerOwner: OwnerId;
+  defenderOwner: OwnerId;
+  attackerWon: boolean;
+  attackerLosses: number;
+  defenderLosses: number;
+}
+
+/** One point on the match timeline: tile counts per player, sampled every ~5s. */
+export interface TimelineSample {
+  t: number;
+  tiles: Partial<Record<PlayerId, number>>;
 }
 
 // ActiveAction represents a troop movement or attack that is in progress.
@@ -161,9 +195,9 @@ export interface ActiveAction {
 
   // Captured at dispatch time so the garrison's experience travels with the troops.
   attackerArmoured: boolean;
-  attackerAttackVetLevel: 0 | 1 | 2 | 3;
-  attackerDefVetLevel: 0 | 1 | 2 | 3;
-  defenderFortLevel: 0 | 1 | 2 | 3 | 4 | 5; // captured at dispatch so timing uses it
+  attackerAttackVetLevel: VetLevel;
+  attackerDefVetLevel: VetLevel;
+  defenderFortLevel: FortLevel; // captured at dispatch so timing uses it
 
   // For chained reinforcements: tile IDs still to visit after the current targetTileId.
   // When a leg resolves and this is non-empty, troops continue to the next tile
@@ -193,6 +227,15 @@ export interface GameState {
   // Which map was used to create this match.
   mapId: MapId;
 
+  // Which seasonal art theme the match was created with. Stored in state so
+  // save/load restores the same art instead of reverting to the default.
+  mapTheme: MapTheme;
+
+  // Tile IDs promoted to capitals at match creation (starting tiles are towns
+  // on the map and get promoted per player). Persisted so save/load can
+  // re-apply the promotions after regenerating tileDefinitions from source.
+  capitalTileIds: string[];
+
   // Elapsed game time in seconds, incremented each tick by deltaSeconds.
   now: number;
 
@@ -207,6 +250,14 @@ export interface GameState {
 
   activeActions: ActiveAction[];
 
+  // Recently-resolved combats for renderer effects. Pruned after a few seconds.
+  combatEvents: CombatEvent[];
+
+  // Tile counts per player sampled every ~5s, drawn as the end-screen match
+  // timeline. Append-only; the array is replaced (never mutated) on append so
+  // clones can share it safely.
+  timeline: TimelineSample[];
+
   ai: AIState;
 
   // Game time of the last neutral-aggression check (runs every 3s on Normal/Hard).
@@ -216,12 +267,20 @@ export interface GameState {
   lastNeutralFortifyAt: number;
 }
 
+/** Per-AI-player strategic state. Each AI keeps its own stance so one
+ * player's stance change never bleeds into another's in 3–4 player modes. */
+export interface AIPlayerState {
+  stance: AIStance;
+  stanceChangedAt: number;
+}
+
 export interface AIState {
   difficulty: Difficulty;
-  stance: AIStance;
+  // The think timer is shared: all AI players act in one pass when it elapses
+  // (see updateAI), so a single timer keeps them fairly scheduled.
   lastThinkAt: number;
   nextThinkAt: number;
-  stanceChangedAt: number;
+  byPlayer: Partial<Record<PlayerId, AIPlayerState>>;
 }
 
 // CombatInput and CombatResult keep the combat function pure and testable.
@@ -235,10 +294,10 @@ export interface CombatInput {
   isSeaAttack: boolean;
   randomValue: number;
   attackerArmoured: boolean;
-  attackerAttackVetLevel: 0 | 1 | 2 | 3;
+  attackerAttackVetLevel: VetLevel;
   defenderArmoured: boolean;
-  defenderFortLevel: 0 | 1 | 2 | 3 | 4 | 5;
-  defenderDefVetLevel: 0 | 1 | 2 | 3;
+  defenderFortLevel: FortLevel;
+  defenderDefVetLevel: VetLevel;
 }
 
 /** The outcome of a resolveCombat call. Exposed fields are used by the renderer and tests. */

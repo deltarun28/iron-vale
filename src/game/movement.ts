@@ -19,12 +19,12 @@ import { areAllies, isPlayer } from "./state";
 import type {
   GameState,
   MoveValidationResult,
-  OwnerId,
   PlayerId,
   SeaCostResult,
   SeaLane,
   TileDefinition,
   TileState,
+  VetLevel,
 } from "./types";
 
 // Movement through difficult terrain uses the SLOWEST terrain between source
@@ -73,7 +73,7 @@ export function calculateLandAttackTime(
   target: TileDefinition,
   troopsSent: number,
   combatResolutionTime: number,
-  attackerAttackVetLevel: 0 | 1 | 2 | 3 = 0,
+  attackerAttackVetLevel: VetLevel = 0,
   defenderFortLevel: number = 0
 ): number {
   const vetSpeedMultiplier = 1 - VETERAN.ATTACK_SPEED_BONUS_PER_LEVEL * attackerAttackVetLevel;
@@ -123,7 +123,7 @@ export function calculateSeaMoveTime(laneDistance: number): number {
 export function calculateSeaAttackTime(
   laneDistance: number,
   combatResolutionTime: number,
-  attackerAttackVetLevel: 0 | 1 | 2 | 3 = 0,
+  attackerAttackVetLevel: VetLevel = 0,
   defenderFortLevel: number = 0
 ): number {
   const vetSpeedMultiplier = 1 - VETERAN.ATTACK_SPEED_BONUS_PER_LEVEL * attackerAttackVetLevel;
@@ -134,6 +134,17 @@ export function calculateSeaAttackTime(
       fortDelayMultiplier +
     SEA.COMBAT_TIME_MULTIPLIER * combatResolutionTime
   );
+}
+
+// Returns every tile reachable from `tileId` by sea: the far end of each lane
+// that starts here, plus the near end of bidirectional lanes that end here.
+export function getSeaNeighbors(seaLanes: SeaLane[], tileId: string): string[] {
+  const neighbors: string[] = [];
+  for (const lane of seaLanes) {
+    if (lane.from === tileId) neighbors.push(lane.to);
+    else if (lane.bidirectional && lane.to === tileId) neighbors.push(lane.from);
+  }
+  return neighbors;
 }
 
 // Looks up the sea lane connecting two tiles. Returns null if no such lane exists.

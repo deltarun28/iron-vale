@@ -11,11 +11,11 @@
  * written.
  */
 
-import { getIronValeTileDefinitions } from "./ironValeMap";
+import { getMapConfig } from "./maps";
 import type { GameState } from "./types";
 
 const SAVE_KEY = "iron_vale_save";
-const SAVE_VERSION = 11; // bumped: chain-move remainingPath bleed fix; clears saves with phantom C→C actions
+const SAVE_VERSION = 14; // bumped: combatEvents, timeline, per-player loss tracking in GameState
 
 interface SaveFile {
   version: number;
@@ -60,8 +60,24 @@ export function loadSavedGame(): GameState | null {
     }
 
     // Always regenerate tileDefinitions from map source so stale JSON can't
-    // cause a mismatch if the map file has been updated since the save.
-    save.state.tileDefinitions = getIronValeTileDefinitions();
+    // cause a mismatch if the map file has been updated since the save —
+    // from the map the save was created on, then re-apply the capital
+    // promotions made at match creation (starting tiles are towns in the
+    // source data and are promoted per player).
+    const tileDefinitions = getMapConfig(
+      save.state.mapId ?? "river_crown"
+    ).getTileDefinitions();
+    for (const tileId of save.state.capitalTileIds ?? []) {
+      const definition = tileDefinitions[tileId];
+      if (definition) {
+        tileDefinitions[tileId] = {
+          ...definition,
+          isCapital: true,
+          isTown: false,
+        };
+      }
+    }
+    save.state.tileDefinitions = tileDefinitions;
 
     return save.state;
   } catch {
@@ -79,21 +95,6 @@ export function clearSavedGame(): void {
  * Used by the start screen to decide whether to show the Continue button.
  */
 export function hasSavedGame(): boolean {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      !("version" in parsed) ||
-      !("state" in parsed)
-    ) {
-      return false;
-    }
-    const save = parsed as SaveFile;
-    return save.version === SAVE_VERSION && save.state.phase === "playing";
-  } catch {
-    return false;
-  }
+  const saved = loadSavedGame();
+  return saved !== null && saved.phase === "playing";
 }

@@ -27,16 +27,15 @@ import type {
   GameState,
   OwnerId,
   PlayerId,
-  TileDefinition,
 } from "./types";
 
-// Called every tick to drip gold into each player's total for capitals and towns they own.
-// Gold is capped at the player's current goldCap and pauses if goldFrozenUntil is active.
-export function updateGoldProduction(state: GameState, deltaSeconds: number): GameState {
-  const nextState = cloneGameState(state);
-
-  for (const tile of Object.values(nextState.tiles)) {
-    const definition = nextState.tileDefinitions[tile.id];
+// Drips gold into each player's total for capitals and towns they own.
+// Gold is capped at the player's current goldCap and pauses if goldFrozenUntil
+// is active. Mutates the draft in place — callers must own the state (see
+// updateGame's single-clone tick). Use updateGoldProduction for an immutable version.
+export function applyGoldProduction(draft: GameState, deltaSeconds: number): void {
+  for (const tile of Object.values(draft.tiles)) {
+    const definition = draft.tileDefinitions[tile.id];
 
     if (!definition) {
       continue;
@@ -52,11 +51,11 @@ export function updateGoldProduction(state: GameState, deltaSeconds: number): Ga
     }
 
     // Gold production is frozen briefly after a capture.
-    if (tile.goldFrozenUntil !== null && tile.goldFrozenUntil > nextState.now) {
+    if (tile.goldFrozenUntil !== null && tile.goldFrozenUntil > draft.now) {
       continue;
     }
 
-    const player = nextState.players[tile.owner];
+    const player = draft.players[tile.owner];
     if (!player) continue;
 
     const goldRate = definition.isCapital
@@ -69,7 +68,12 @@ export function updateGoldProduction(state: GameState, deltaSeconds: number): Ga
     // Track total earned separately so the end screen isn't 0 for the loser.
     player.totalGoldEarned += player.gold - goldBefore;
   }
+}
 
+/** Immutable wrapper around applyGoldProduction. */
+export function updateGoldProduction(state: GameState, deltaSeconds: number): GameState {
+  const nextState = cloneGameState(state);
+  applyGoldProduction(nextState, deltaSeconds);
   return nextState;
 }
 
@@ -136,6 +140,15 @@ export function handleTileCaptureEconomy(params: {
     return nextState;
   }
 
+  // Track losses for the end-of-match achievements (flawless / comeback).
+  if (isPlayer(params.previousOwner)) {
+    const loser = nextState.players[params.previousOwner];
+    if (loser) {
+      loser.tilesLost += 1;
+      if (definition.isCapital) loser.capitalsLost += 1;
+    }
+  }
+
   nextState = applyGoldFreezeOnCapture(nextState, params.capturedTileId);
 
   // If a player-owned capital was taken, run the escrow mechanic on the loser.
@@ -161,28 +174,8 @@ export function handleTileCaptureEconomy(params: {
   return nextState;
 }
 
-// Returns the list of tile definitions that are currently producing gold for a player.
-// Useful for the AI and HUD to understand income sources.
-export function getGoldProducingTilesForPlayer(
-  state: GameState,
-  playerId: PlayerId
-): TileDefinition[] {
-  return Object.values(state.tileDefinitions).filter((definition) => {
-    const tile = state.tiles[definition.id];
-
-    if (!tile) {
-      return false;
-    }
-
-    return (
-      tile.owner === playerId &&
-      (definition.isCapital || definition.isTown)
-    );
-  });
-}
-
 // Deducts gold from a player. Throws if the player cannot afford it,
-// so callers should check canAffordGold first.
+// so callers must validate affordability first (validateSeaAction does this).
 export function spendGold(
   state: GameState,
   playerId: PlayerId,
@@ -206,18 +199,4 @@ export function spendGold(
   player.gold -= amount;
 
   return nextState;
-}
-
-/**
- * Returns true if the player has at least `amount` gold.
- * Call this before spendGold to avoid the exception on insufficient funds.
- */
-export function canAffordGold(
-  state: GameState,
-  playerId: PlayerId,
-  amount: number
-): boolean {
-  const player = state.players[playerId];
-  if (!player) return false;
-  return player.gold >= amount;
 }

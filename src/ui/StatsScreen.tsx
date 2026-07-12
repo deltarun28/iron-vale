@@ -5,6 +5,7 @@
  * map and difficulty, and overall averages. Tapping outside closes it.
  */
 
+import { ACHIEVEMENTS } from "../game/achievements";
 import { loadStats } from "../game/stats";
 import type { Difficulty, MapId } from "../game/types";
 
@@ -108,6 +109,37 @@ export function StatsScreen({ onClose }: StatsScreenProps) {
                       })}
                     </div>
                   ))}
+                </div>
+              </section>
+
+              {/* Achievements */}
+              <section className="how-to-play__section">
+                <h3>
+                  Achievements
+                  <span className="stats-screen__ach-count">
+                    {" "}
+                    {Object.keys(stats.achievements).length}/{ACHIEVEMENTS.length}
+                  </span>
+                </h3>
+                <div className="stats-screen__achievements">
+                  {ACHIEVEMENTS.map((def) => {
+                    const isUnlocked = stats.achievements[def.id] !== undefined;
+                    return (
+                      <div
+                        key={def.id}
+                        className={`stats-screen__ach${isUnlocked ? "" : " stats-screen__ach--locked"}`}
+                        title={def.description}
+                      >
+                        <span className="stats-screen__ach-icon">
+                          {isUnlocked ? def.icon : "🔒"}
+                        </span>
+                        <span className="stats-screen__ach-body">
+                          <span className="stats-screen__ach-name">{def.name}</span>
+                          <span className="stats-screen__ach-desc">{def.description}</span>
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
 

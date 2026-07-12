@@ -9,11 +9,25 @@
  */
 
 import { useEffect, useState } from "react";
-import type { Difficulty, MapId, PlayerMode } from "../game/types";
+import type { Difficulty, MapId, MapTheme, PlayerMode } from "../game/types";
 import { startMenuMusic, stopMenuMusic } from "../game/audio";
+import {
+  THEME_UNLOCK_HINTS,
+  getThemePreference,
+  isThemeUnlocked,
+  setThemePreference,
+  type ThemePreference,
+} from "../game/settings";
 import { asset } from "../assets";
 import { HowToPlay } from "./HowToPlay";
 import { StatsScreen } from "./StatsScreen";
+
+const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
+  { id: "random", label: "Random" },
+  { id: "default", label: "Classic" },
+  { id: "winter", label: "Winter" },
+  { id: "autumn", label: "Autumn" },
+];
 
 interface StartScreenProps {
   hasSave: boolean;
@@ -25,8 +39,14 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [mapId, setMapId] = useState<MapId>("river_crown");
   const [playerMode, setPlayerMode] = useState<PlayerMode>("1v1");
+  const [themePreference, setThemePreferenceState] = useState<ThemePreference>(() => getThemePreference());
   const [showHelp, setShowHelp] = useState(false);
   const [showStats, setShowStats] = useState(false);
+
+  function handleThemeSelect(preference: ThemePreference): void {
+    setThemePreference(preference);
+    setThemePreferenceState(preference);
+  }
 
   useEffect(() => {
     startMenuMusic();
@@ -131,6 +151,31 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
             >
               Hard
             </button>
+          </div>
+        </div>
+
+        <div className="start-screen__section">
+          <div className="start-screen__label">Theme</div>
+          <div className="start-screen__options">
+            {THEME_OPTIONS.map(({ id, label }) => {
+              const locked = id !== "random" && !isThemeUnlocked(id as MapTheme);
+              const hint = id !== "random" ? THEME_UNLOCK_HINTS[id as MapTheme] : null;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={`start-screen__option${themePreference === id ? " start-screen__option--active" : ""}${locked ? " start-screen__option--locked" : ""}`}
+                  disabled={locked}
+                  title={locked && hint ? `Locked — ${hint}` : undefined}
+                  onClick={() => handleThemeSelect(id)}
+                >
+                  {locked ? `🔒 ${label}` : label}
+                  {locked && hint && (
+                    <span className="start-screen__unlock-hint">{hint}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 

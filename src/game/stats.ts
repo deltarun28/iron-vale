@@ -29,6 +29,8 @@ export interface PlayerStats {
   recentGames: GameRecord[];
   /** Sum of all game durations for computing average. */
   totalDurationSeconds: number;
+  /** Unlocked achievement ids → unlock timestamp (ms). */
+  achievements: Record<string, number>;
 }
 
 function defaults(): PlayerStats {
@@ -39,6 +41,7 @@ function defaults(): PlayerStats {
     bestTimes: {},
     recentGames: [],
     totalDurationSeconds: 0,
+    achievements: {},
   };
 }
 
@@ -60,6 +63,10 @@ export function loadStats(): PlayerStats {
         : [],
       totalDurationSeconds:
         typeof p.totalDurationSeconds === "number" ? p.totalDurationSeconds : 0,
+      achievements:
+        typeof p.achievements === "object" && p.achievements !== null
+          ? (p.achievements as Record<string, number>)
+          : {},
     };
   } catch {
     return defaults();
@@ -118,4 +125,15 @@ export function recordGameResult(
 
   saveStats(stats);
   return newBest;
+}
+
+/** Persists newly unlocked achievement ids with the current timestamp. */
+export function unlockAchievements(ids: string[]): void {
+  if (ids.length === 0) return;
+  const stats = loadStats();
+  const now = Date.now();
+  for (const id of ids) {
+    if (stats.achievements[id] === undefined) stats.achievements[id] = now;
+  }
+  saveStats(stats);
 }

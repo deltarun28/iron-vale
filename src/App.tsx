@@ -7,6 +7,7 @@
  */
 
 import { useState } from "react";
+import { resolveMapTheme } from "./game/settings";
 import { clearSavedGame, hasSavedGame, loadSavedGame } from "./game/storage";
 import type { Difficulty, GameState, MapId, MapTheme, PlayerMode } from "./game/types";
 import { GameScreen } from "./ui/GameScreen";
@@ -25,20 +26,15 @@ export default function App() {
   const [initialState, setInitialState] = useState<GameState | undefined>(undefined);
   const [saveExists, setSaveExists] = useState(() => hasSavedGame());
 
-  function pickMapTheme(): MapTheme {
-    const roll = Math.random();
-    if (roll < 0.70) return "default";
-    if (roll < 0.85) return "autumn";
-    return "winter";
-  }
-
   /** Clears any existing save and starts a fresh game with the chosen settings. */
   function handlePlay(chosen: Difficulty, chosenMapId: MapId, chosenMode: PlayerMode): void {
     clearSavedGame();
     setSaveExists(false);
     setDifficulty(chosen);
     setMapId(chosenMapId);
-    setMapTheme(pickMapTheme());
+    // Theme comes from the player's picker choice (with unlock rules) or a
+    // weighted roll among unlocked themes when set to "random".
+    setMapTheme(resolveMapTheme());
     setPlayerMode(chosenMode);
     setInitialState(undefined);
     setScreen("game");
@@ -51,6 +47,7 @@ export default function App() {
     setInitialState(saved);
     setDifficulty(saved.ai.difficulty);
     setMapId(saved.mapId ?? "river_crown");
+    setMapTheme(saved.mapTheme ?? "default");
     setPlayerMode(saved.playerMode);
     setScreen("game");
   }
