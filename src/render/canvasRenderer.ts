@@ -61,30 +61,49 @@ interface MapImageConfig {
 // Image configs stay here (not in game/maps.ts) because HTMLImageElement
 // doesn't exist in the headless simulator environment.
 const MAP_IMAGE_CONFIGS: Record<MapId, MapImageConfig> = {
-  // Iron Vale (1643×957, q=0 = east_plains which sits right of centre).
+  // Iron Vale (1643×957). Calibrated by seam-registration fit against the
+  // art's hex borders (this art's grid is slightly irregular — the fit is the
+  // best average alignment, anchored well on the bridge tile).
   river_crown: {
     images: {
       default: Object.assign(new Image(), { src: asset("map.png") }),
       winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
       autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
     },
-    hexSize: 149,
-    originX: 1038,
-    originY: 448,
-    scaleX:  1.17,
+    hexSize: 137.6,
+    originX: 1056,
+    originY: 473,
+    scaleX:  1.206,
   },
-  // Borderlands (600×600, q=0,r=0 = center_plains which is the image centre).
-  // These calibration values are initial estimates — tweak if the hex grid drifts.
+  // Borderlands (1254×1254). Calibrated by seam-registration fit — the art's
+  // hexes are ~11% narrower than regular, hence the horizontal stretch.
   borderlands: {
     images: {
       default: Object.assign(new Image(), { src: asset("borderlands.png") }),
       winter:  Object.assign(new Image(), { src: asset("borderlands-winter.png") }),
       autumn:  Object.assign(new Image(), { src: asset("borderlands-autumn.png") }),
     },
-    hexSize: 107,
-    originX: 714,
-    originY: 600,
-    scaleX:  1.00,
+    hexSize: 102.6,
+    originX: 645,
+    originY: 642,
+    scaleX:  1.126,
+  },
+  // Shattered Isles (1403×1121). Calibrated by registration fit against the
+  // art's water grid lines: the art grid is NOT flush to the image edges —
+  // hexes are 90.3px (vertical radius), drawn 5% wider than regular (hence
+  // scaleX 1/1.05 ≈ 0.95 to squeeze the art onto the game's regular hexes),
+  // with the q=0,r=0 peak at pixel (722, 572).
+  // Winter/autumn art pending — those themes fall back to sea-blue until then.
+  shattered_isles: {
+    images: {
+      default: Object.assign(new Image(), { src: asset("shattered.png") }),
+      winter:  Object.assign(new Image(), { src: asset("shattered-winter.png") }),
+      autumn:  Object.assign(new Image(), { src: asset("shattered-autumn.png") }),
+    },
+    hexSize: 90.3,
+    originX: 722,
+    originY: 572,
+    scaleX:  0.952,
   },
 };
 
@@ -614,18 +633,34 @@ function drawOwnershipTint(
 }
 
 // Returns the three control points of the quadratic Bézier used to draw a sea
-// route between two tile centres. The arc bows downward into the sea area.
-// Every function that draws sea movement (lanes, active actions, drag line)
-// calls this so they all trace exactly the same curve.
+// route between two tile centres. Endpoints sit exactly on the tile centres;
+// the curve bows away from the map centre, so ring routes arc over open water
+// while radial routes (to/from the middle of the map) stay nearly straight.
+// Every function that draws sea movement (lanes, active actions, drag line,
+// clash effects) calls this so they all trace exactly the same curve.
 function getSeaArcBezier(
   from: Point,
   to: Point,
-  size: number
+  layout: HexLayout
 ): { start: Point; control: Point; end: Point } {
+  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  // Unit perpendicular to the lane.
+  const perpX = -dy / length;
+  const perpY = dx / length;
+  // Bow magnitude = the perpendicular's component pointing away from the map
+  // origin at the midpoint. Zero for radial lanes, full for tangential ones.
+  const outward =
+    perpX * (mid.x - layout.origin.x) + perpY * (mid.y - layout.origin.y);
+  const maxBow = layout.size * 1.6;
+  const bow = Math.max(-maxBow, Math.min(maxBow, outward * 0.8));
+
   return {
-    start:   { x: from.x,               y: from.y + size * 1.375 },
-    control: { x: (from.x + to.x) / 2,  y: Math.max(from.y, to.y) + size * 1.667 },
-    end:     { x: to.x,                  y: to.y + size * 1.375 },
+    start: from,
+    control: { x: mid.x + perpX * bow, y: mid.y + perpY * bow },
+    end: to,
   };
 }
 
@@ -661,7 +696,7 @@ function drawSeaLanes(ctx: CanvasRenderingContext2D, state: GameState, layout: H
 
     const from = axialToPixel(fromDefinition.coord, layout);
     const to = axialToPixel(toDefinition.coord, layout);
-    const arc = getSeaArcBezier(from, to, layout.size);
+    const arc = getSeaArcBezier(from, to, layout);
 
     ctx.beginPath();
     ctx.moveTo(arc.start.x, arc.start.y);
@@ -718,7 +753,7 @@ function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layo
     let targetEdge: Point; // point on the edge of the destination hex for the arrowhead
 
     if (action.isSeaAction) {
-      const arc = getSeaArcBezier(source, target, layout.size);
+      const arc = getSeaArcBezier(source, target, layout);
 
       ctx.globalAlpha = 0.22;
       ctx.strokeStyle = color;
@@ -760,7 +795,7 @@ function drawActiveActions(ctx: CanvasRenderingContext2D, state: GameState, layo
       { alpha: 0.08, radius: 3, back: 0.105 },
     ];
     ctx.fillStyle = "rgba(214, 196, 158, 1)";
-    const trailArc = action.isSeaAction ? getSeaArcBezier(source, target, layout.size) : null;
+    const trailArc = action.isSeaAction ? getSeaArcBezier(source, target, layout) : null;
     for (const puff of trail) {
       const tp = progress - puff.back;
       if (tp <= 0.02) continue;
@@ -934,7 +969,7 @@ function drawDragLine(
     const targetDefinition = state.tileDefinitions[hoveredTileId];
     if (targetDefinition) {
       const targetCenter = axialToPixel(targetDefinition.coord, layout);
-      const arc = getSeaArcBezier(sourceCenter, targetCenter, layout.size);
+      const arc = getSeaArcBezier(sourceCenter, targetCenter, layout);
 
       ctx.beginPath();
       ctx.moveTo(arc.start.x, arc.start.y);
@@ -1070,7 +1105,7 @@ function drawNotifications(
     if (fromDef && n.anchorFraction !== undefined) {
       const from = axialToPixel(fromDef.coord, layout);
       if (n.anchorAtSea) {
-        const arc = getSeaArcBezier(from, center, layout.size);
+        const arc = getSeaArcBezier(from, center, layout);
         center = bezierPoint(arc.start, arc.control, arc.end, n.anchorFraction);
       } else {
         center = {
@@ -1135,7 +1170,7 @@ function drawClashes(
     if (fromDef && clash.pathFraction !== undefined) {
       const from = axialToPixel(fromDef.coord, layout);
       if (clash.atSea) {
-        const arc = getSeaArcBezier(from, center, layout.size);
+        const arc = getSeaArcBezier(from, center, layout);
         const p = bezierPoint(arc.start, arc.control, arc.end, clash.pathFraction);
         center = { x: p.x, y: p.y - 10 };
       } else {

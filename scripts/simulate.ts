@@ -9,6 +9,7 @@
  * Options:
  *   --count N          Number of games to simulate (default: 100)
  *   --mode MODE        Player mode: 1v1 | 1v1v1 | 1v1v1v1 | 2v2 (default: 1v1)
+ *   --map MAP          Map: river_crown | borderlands | shattered_isles (default: river_crown)
  *   --difficulty DIFF  AI difficulty: easy | normal | hard (default: normal)
  *   --bot TYPE         Bot for non-player1 slots: random | ai (default: ai)
  *   --replay           After the batch, replay the last game and print its action log
@@ -17,7 +18,7 @@
 
 import type { BatchResult, BotMode, GameResult, SimulationOptions } from "../src/game/simulator";
 import { runBatch, runGame, replayGame } from "../src/game/simulator";
-import type { Difficulty, PlayerMode } from "../src/game/types";
+import type { Difficulty, MapId, PlayerMode } from "../src/game/types";
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -33,6 +34,7 @@ function hasFlag(flag: string): boolean {
 
 const count      = parseInt(getArg("--count", "100"), 10);
 const mode       = getArg("--mode", "1v1") as PlayerMode;
+const mapId      = getArg("--map", "river_crown") as MapId;
 const difficulty = getArg("--difficulty", "normal") as Difficulty;
 const botMode    = getArg("--bot", "ai") as BotMode;
 const player1Bot = (botMode === "greedy" ? "greedy" : "random") as "random" | "greedy";
@@ -68,6 +70,7 @@ console.log(`Running ${count} game${count !== 1 ? "s" : ""}...\n`);
 
 const options: SimulationOptions = {
   playerMode:  mode,
+  mapId,
   difficulty,
   player1Bot,
   othersBots:  botMode,

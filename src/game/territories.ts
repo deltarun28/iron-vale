@@ -104,9 +104,56 @@ export const BORDERLANDS_TERRITORIES: readonly TerritoryDefinition[] = [
   },
 ] as const;
 
+export const SHATTERED_ISLES_TERRITORIES: readonly TerritoryDefinition[] = [
+  // The whole centre island is the prize: no gold there, but the biggest
+  // production bonus on the map (7 × 0.06 ≈ +0.42/s on every owned tile).
+  {
+    id: "si_heart",
+    name: "The Shattered Heart",
+    tileIds: [
+      "si_landing_nw", "si_landing_ne", "si_landing_sw", "si_landing_se",
+      "si_heart_forest_w", "si_heart_forest_e", "si_heart_peak",
+    ],
+    bonusPerTile: 0.06,
+  },
+  // Outer territories exclude the towns (per the convention above) — holding
+  // an island's countryside rewards clearing it, not just spawning there.
+  {
+    id: "si_nw_shoals",
+    name: "Northwest Shoals",
+    tileIds: ["si_nw_forest", "si_nw_field_w", "si_nw_field_e"],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "si_ne_shoals",
+    name: "Northeast Shoals",
+    tileIds: ["si_ne_forest", "si_ne_field", "si_ne_heath"],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "si_sw_shoals",
+    name: "Southwest Shoals",
+    tileIds: ["si_sw_forest", "si_sw_field", "si_sw_heath"],
+    bonusPerTile: 0.1,
+  },
+  {
+    id: "si_se_shoals",
+    name: "Southeast Shoals",
+    tileIds: ["si_se_forest", "si_se_field", "si_se_heath"],
+    bonusPerTile: 0.1,
+  },
+] as const;
+
 /** Returns the territory list for the given map. */
 export function getTerritoriesForMap(mapId: MapId): readonly TerritoryDefinition[] {
-  return mapId === "borderlands" ? BORDERLANDS_TERRITORIES : IRON_VALE_TERRITORIES;
+  switch (mapId) {
+    case "borderlands":
+      return BORDERLANDS_TERRITORIES;
+    case "shattered_isles":
+      return SHATTERED_ISLES_TERRITORIES;
+    default:
+      return IRON_VALE_TERRITORIES;
+  }
 }
 
 /** Returns the player controlling all tiles, or null if split/neutral. */

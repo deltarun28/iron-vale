@@ -24,7 +24,7 @@ export type TerrainType = "plains" | "forest" | "mountain";
 export type Difficulty = "easy" | "normal" | "hard";
 
 /** Named map identifier — what the player picks on the start screen. */
-export type MapId = "river_crown" | "borderlands";
+export type MapId = "river_crown" | "borderlands" | "shattered_isles";
 
 /** Which map art is used for the match. All three share the same Iron Vale hex layout. */
 export type MapTheme = "default" | "winter" | "autumn";
@@ -95,7 +95,7 @@ export interface TileState {
   // Gold generation pauses briefly after a town or capital changes hands.
   goldFrozenUntil: number | null;
 
-  // Fortification level. Each level adds +6% defence and slows attacks.
+  // Fortification level. Each level adds +10% defence and slows attacks.
   // Level drops by 2 when captured (minimum 0). Building costs 5g and takes 4s per level.
   fortLevel: FortLevel;
   armoured: boolean;  // equipped garrison: +25% combat power for attack and defence

@@ -100,7 +100,7 @@ export function HowToPlay({ onClose }: HowToPlayProps) {
               levels costs 5 gold and takes a few seconds to construct.
             </p>
             <ul>
-              <li>Each level adds +6% defence power (up to +30% at max)</li>
+              <li>Each level adds +10% defence power (up to +50% at max)</li>
               <li>Each level slows incoming land attacks by 10% and sea attacks by 15%</li>
               <li>Fortifications drop by two levels if the territory is captured</li>
               <li>Neutral towns and bridges slowly fortify on their own — don't wait too long to take them</li>

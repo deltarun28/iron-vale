@@ -1324,10 +1324,19 @@ function performAIUpgrades(state: GameState, playerId: PlayerId): GameState {
   const fortCapTown =
     difficulty === "hard" ? 4 : difficulty === "normal" ? 3 : 2;
   const fortCapBridge = difficulty === "hard" ? 3 : 2;
+  const fortCapThreatened = difficulty === "hard" ? 4 : 3;
   const goldBuffer =
     difficulty === "hard" ? 1 : difficulty === "normal" ? 3 : 5;
 
   if (player.gold >= FORT.GOLD_COST_PER_LEVEL + goldBuffer) {
+    // Tiles under active threat are worth walls wherever they are — this is
+    // what lets the AI fortify frontline chokepoints (e.g. island landings),
+    // not just its capital and towns.
+    const threatenedIds =
+      difficulty === "easy"
+        ? new Set<string>()
+        : new Set(assessOwnTileThreats(nextState, playerId).map((t) => t.tileId));
+
     // Sort candidates by priority rather than picking the first match — this
     // ensures the capital always gets fortified before a town when both are
     // eligible the same tick.
@@ -1342,6 +1351,9 @@ function performAIUpgrades(state: GameState, playerId: PlayerId): GameState {
       if (def.isCapital) {
         cap = fortCapCapital;
         priority = 100;
+      } else if (threatenedIds.has(tileId)) {
+        cap = fortCapThreatened;
+        priority = 70;
       } else if (def.hasBridge && difficulty !== "easy") {
         cap = fortCapBridge;
         priority = 50;

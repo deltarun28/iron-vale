@@ -112,10 +112,12 @@ export const ACHIEVEMENTS: readonly AchievementDef[] = [
   {
     id: "both_maps",
     name: "World Tour",
-    description: "Win on both maps.",
+    description: "Win on every map.",
     icon: "🌍",
     check: (ctx) =>
-      hasWinOnMap(ctx.stats, "river_crown") && hasWinOnMap(ctx.stats, "borderlands"),
+      hasWinOnMap(ctx.stats, "river_crown") &&
+      hasWinOnMap(ctx.stats, "borderlands") &&
+      hasWinOnMap(ctx.stats, "shattered_isles"),
   },
   {
     id: "ffa_win",

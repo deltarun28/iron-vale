@@ -18,7 +18,7 @@ import { ARMOUR, FORT } from "./constants";
 import { validateLandAction, validateSeaAction } from "./movement";
 import { cloneGameState, createInitialGameState, getActivePlayerIds } from "./state";
 import { updateGame } from "./simulation";
-import type { ActiveAction, Difficulty, GameState, PlayerId, PlayerMode } from "./types";
+import type { ActiveAction, Difficulty, GameState, MapId, PlayerId, PlayerMode } from "./types";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -96,6 +96,7 @@ export type BotMode = "random" | "greedy" | "ai";
 export interface SimulationOptions {
   difficulty?: Difficulty;
   playerMode?: PlayerMode;
+  mapId?: MapId;
   // Who controls player1 (the "human" slot).
   player1Bot?: "random" | "greedy";
   // Who controls all other player slots.
@@ -479,6 +480,7 @@ export function runGame(options: SimulationOptions = {}): GameResult {
   const initialState = createInitialGameState(
     options.difficulty ?? "normal",
     options.playerMode ?? "1v1",
+    options.mapId ?? "river_crown",
   );
 
   const actionLog: LoggedAction[] = [];

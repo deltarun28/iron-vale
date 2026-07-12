@@ -154,7 +154,7 @@ export const FORT = {
   MAX_LEVEL: 5,
   GOLD_COST_PER_LEVEL: 5,
   BUILD_SECONDS_PER_LEVEL: 4,
-  DEFENCE_BONUS_PER_LEVEL: 0.06,       // +6% defence per level → 1.30× at max
+  DEFENCE_BONUS_PER_LEVEL: 0.10,       // +10% defence per level → 1.50× at max
   LAND_ATTACK_DELAY_PER_LEVEL: 0.10,   // 10% slower land attack per level
   SEA_ATTACK_DELAY_PER_LEVEL: 0.15,    // 15% slower sea attack per level
   CAPTURE_LEVEL_REDUCTION: 2,          // level drops by 2 on capture (min 0)

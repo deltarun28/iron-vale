@@ -20,8 +20,14 @@ import {
   type StartingTileSpec,
 } from "./ironValeMap";
 import {
+  SHATTERED_ISLES_STARTING_TILES,
+  getShatteredIslesTileDefinitions,
+  shatteredIslesSeaLanes,
+} from "./shatteredIslesMap";
+import {
   BORDERLANDS_TERRITORIES,
   IRON_VALE_TERRITORIES,
+  SHATTERED_ISLES_TERRITORIES,
   type TerritoryDefinition,
 } from "./territories";
 import type { MapId, SeaLane, TileDefinition } from "./types";
@@ -65,6 +71,18 @@ export const MAP_CONFIGS: Record<MapId, MapConfig> = {
     fitDivX: 11,
     fitDivY: 11,
     originXMul: 0.87,
+    originYMul: 0,
+  },
+  // Shattered Isles: 8 tiles wide × 7 high (53-cell grid, 23 land tiles),
+  // symmetric about the origin, so no origin nudge is needed.
+  shattered_isles: {
+    getTileDefinitions: getShatteredIslesTileDefinitions,
+    seaLanes: shatteredIslesSeaLanes,
+    startingTiles: SHATTERED_ISLES_STARTING_TILES,
+    territories: SHATTERED_ISLES_TERRITORIES,
+    fitDivX: 14,
+    fitDivY: 11,
+    originXMul: 0,
     originYMul: 0,
   },
 };

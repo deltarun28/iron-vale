@@ -90,6 +90,13 @@ export function StartScreen({ hasSave, onPlay, onContinue }: StartScreenProps) {
             >
               Borderlands
             </button>
+            <button
+              type="button"
+              className={`start-screen__option${mapId === "shattered_isles" ? " start-screen__option--active" : ""}`}
+              onClick={() => setMapId("shattered_isles")}
+            >
+              Shattered Isles
+            </button>
           </div>
         </div>
 

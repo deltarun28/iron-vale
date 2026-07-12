@@ -16,6 +16,7 @@ interface StatsScreenProps {
 const MAPS: { id: MapId; label: string }[] = [
   { id: "river_crown", label: "River Crown" },
   { id: "borderlands", label: "Borderlands" },
+  { id: "shattered_isles", label: "Shattered Isles" },
 ];
 
 const DIFFICULTIES: { id: Difficulty; label: string }[] = [
