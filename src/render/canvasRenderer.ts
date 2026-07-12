@@ -50,12 +50,18 @@ const HEX_EDGE_DIRS: readonly { q: number; r: number }[] = [
 // hexSize: hex radius in PNG pixels (centre-to-corner, vertical).
 // originX/Y: pixel coords of the q=0,r=0 hex centre in the PNG.
 // scaleX: horizontal stretch to correct aspect-ratio differences in the source art.
-interface MapImageConfig {
-  images: Record<MapTheme, HTMLImageElement>;
+interface MapImageCalibration {
   hexSize: number;
   originX: number;
   originY: number;
   scaleX: number;
+}
+
+interface MapImageConfig extends MapImageCalibration {
+  images: Record<MapTheme, HTMLImageElement>;
+  // Seasonal renders of the same map can have slightly different grids
+  // (separately generated art); themes listed here override the defaults.
+  themeCalibration?: Partial<Record<MapTheme, MapImageCalibration>>;
 }
 
 // Image configs stay here (not in game/maps.ts) because HTMLImageElement
@@ -88,12 +94,10 @@ const MAP_IMAGE_CONFIGS: Record<MapId, MapImageConfig> = {
     originY: 642,
     scaleX:  1.126,
   },
-  // Shattered Isles (1403×1121). Calibrated by registration fit against the
-  // art's water grid lines: the art grid is NOT flush to the image edges —
-  // hexes are 90.3px (vertical radius), drawn 5% wider than regular (hence
-  // scaleX 1/1.05 ≈ 0.95 to squeeze the art onto the game's regular hexes),
-  // with the q=0,r=0 peak at pixel (722, 572).
-  // Winter/autumn art pending — those themes fall back to sea-blue until then.
+  // Shattered Isles. Each seasonal render is a separate art generation with
+  // its own grid, so each theme carries its own registration-fitted
+  // calibration (fit against the water grid lines; scaleX = 1/artStretch).
+  // Summer (default): 1403×1121; autumn: 1388×1133; winter: 1393×1129.
   shattered_isles: {
     images: {
       default: Object.assign(new Image(), { src: asset("shattered.png") }),
@@ -104,6 +108,10 @@ const MAP_IMAGE_CONFIGS: Record<MapId, MapImageConfig> = {
     originX: 722,
     originY: 572,
     scaleX:  0.952,
+    themeCalibration: {
+      autumn: { hexSize: 91.5, originX: 718, originY: 564, scaleX: 0.980 },
+      winter: { hexSize: 93.8, originX: 722, originY: 564, scaleX: 1.0 },
+    },
   },
 };
 
@@ -220,12 +228,13 @@ function drawMapBackground(
 ): void {
   const img = mapConfig.images[theme];
   if (!img.complete || img.naturalWidth === 0) return;
-  const scaleY = layout.size / mapConfig.hexSize;
-  const scaleX = scaleY * mapConfig.scaleX;
+  const calibration = mapConfig.themeCalibration?.[theme] ?? mapConfig;
+  const scaleY = layout.size / calibration.hexSize;
+  const scaleX = scaleY * calibration.scaleX;
   ctx.drawImage(
     img,
-    layout.origin.x - mapConfig.originX * scaleX,
-    layout.origin.y - mapConfig.originY * scaleY,
+    layout.origin.x - calibration.originX * scaleX,
+    layout.origin.y - calibration.originY * scaleY,
     img.naturalWidth * scaleX,
     img.naturalHeight * scaleY,
   );
