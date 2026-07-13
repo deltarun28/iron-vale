@@ -67,32 +67,35 @@ interface MapImageConfig extends MapImageCalibration {
 // Image configs stay here (not in game/maps.ts) because HTMLImageElement
 // doesn't exist in the headless simulator environment.
 const MAP_IMAGE_CONFIGS: Record<MapId, MapImageConfig> = {
-  // Iron Vale (1643×957). Calibrated by seam-registration fit against the
-  // art's hex borders (this art's grid is slightly irregular — the fit is the
-  // best average alignment, anchored well on the bridge tile).
+  // Iron Vale (1643×957, q=0 = east_plains which sits right of centre).
+  // Hand-tuned values — an automated seam-fit attempt made this worse (the
+  // art's border bands mislead edge-contrast scoring); don't "refit" without
+  // verifying anchor tiles (the bridge especially) at full resolution.
   river_crown: {
     images: {
       default: Object.assign(new Image(), { src: asset("map.png") }),
       winter:  Object.assign(new Image(), { src: asset("map-winter.png") }),
       autumn:  Object.assign(new Image(), { src: asset("map-autumn.png") }),
     },
-    hexSize: 137.6,
-    originX: 1056,
-    originY: 473,
-    scaleX:  1.206,
+    hexSize: 149,
+    originX: 1038,
+    originY: 448,
+    scaleX:  1.17,
   },
-  // Borderlands (1254×1254). Calibrated by seam-registration fit — the art's
-  // hexes are ~11% narrower than regular, hence the horizontal stretch.
+  // Borderlands (1254×1254). Calibrated from the four castle anchors (known
+  // grid coords, measured art positions, solved exactly — cross-checks agree
+  // within 2px) and verified by full-map overlay. Automated seam-fitting
+  // fails on this painterly art; use landmark anchors if recalibrating.
   borderlands: {
     images: {
       default: Object.assign(new Image(), { src: asset("borderlands.png") }),
       winter:  Object.assign(new Image(), { src: asset("borderlands-winter.png") }),
       autumn:  Object.assign(new Image(), { src: asset("borderlands-autumn.png") }),
     },
-    hexSize: 102.6,
-    originX: 645,
-    originY: 642,
-    scaleX:  1.126,
+    hexSize: 104.4,
+    originX: 726,
+    originY: 620,
+    scaleX:  0.962,
   },
   // Shattered Isles. Each seasonal render is a separate art generation with
   // its own grid, so each theme carries its own registration-fitted
