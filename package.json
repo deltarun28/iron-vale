@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:offline": "node --test e2e/offline.static.mjs e2e/offline.e2e.mjs",
     "lint": "eslint src",
     "simulate": "tsx scripts/simulate.ts"
   },

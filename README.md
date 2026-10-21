@@ -107,3 +107,16 @@ Gold cap:
 
 ```text
 10 + 10 per capital held
+```
+
+## Offline
+
+The service worker (Workbox, from `vite-plugin-pwa`) precaches the built app:
+code, styles, every map image, the menu art and every sound. That is about 45 MB,
+so the first install takes a while. Updates use a prompt (`src/ui/UpdatePrompt.tsx`).
+
+```bash
+npm run build
+npm run test:offline                                                 # static checks, then browser checks
+PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core CHROME_PATH=/usr/bin/chromium npm run test:offline                                           # run the browser checks as well
+```

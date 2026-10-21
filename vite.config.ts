@@ -55,13 +55,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Include audio formats so sounds work offline after first install.
-        globPatterns: ["**/*.{js,css,html,svg,woff2,mp3,ogg,wav}"],
-        globIgnores: ["**/map.png", "**/map-winter.png", "**/map-autumn.png", "**/logo.png", "**/icon.png", "**/menu-bg.png", "**/menu.wav"],
-        additionalManifestEntries: [
-          { url: "icon-192.png", revision: null },
-          { url: "icon-512.png", revision: null },
-        ],
+        // Everything the game draws or plays is precached, so a phone with no
+        // network can start a match on any map and hear every sound. That includes
+        // the map art (about 3.5 MB each), which the earlier pattern left out.
+        globPatterns: ["**/*.{js,css,html,svg,png,woff2,mp3,ogg,wav}"],
+        // Workbox skips files over 2 MB by default, and the largest map is about 4 MB.
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),
   ],
